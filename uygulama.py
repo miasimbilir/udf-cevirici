@@ -41,7 +41,7 @@ except Exception:
     TEMEL_PENCERE, SURUKLENEBILIR = tk.Tk, False
 
 UYGULAMA_ADI = "UDF Çevirici"
-SURUM = "1.2"
+SURUM = "1.2.1"
 YAZAR = "Av. Arb. Mevlana İbrahim Asım Bilir"
 YAZAR_EK = "av.ibrahimbilir@gmail.com"
 TELIF = "© 2026 Av. Arb. Mevlana İbrahim Asım Bilir"
@@ -199,6 +199,8 @@ SADE_UYARI = (
                                       "Editör'de her sayfada görünür."),
     ("UDF'de sayfa arka planı olarak yazıldı", "Antet, UDF'de sayfa zemini olarak yazıldı (Editör'de her sayfada görünür)."),
     ("ile Word biçimine çevrildi", None),                   # aşağıda programın adıyla doldurulur
+    ("sayfadaki boyutuna göre küçültüldü", "Fotoğraflar sayfadaki boyutlarına göre küçültüldü; baskıda fark görülmez, dosya küçüldü."),
+    ("MB üzerindeki dosyayı kabul etmeyebilir", "UDF dosyası 10 MB'ı aşıyor; UYAP kabul etmeyebilir. Fotoğrafların bir kısmını ayrı ek olarak yüklemeyi düşünün."),
     # --- UDF → Word ---
     ("e-imzalı", "Bu UDF e-imzalıydı; Word belgesi imza taşımaz, yalnızca çalışma kopyasıdır."),
     ("harf sıralı liste", "Harfli liste etiketleri (a, b, c, ç…) Editör'deki hâliyle düz metin yazıldı; "

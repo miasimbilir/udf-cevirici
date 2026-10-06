@@ -575,6 +575,39 @@ def _convert_png(data):
     return None
 
 
+GORSEL_DPI = 200                                  # sayfadaki boyutuna göre bu çözünürlüğe indirilir (baskıda fark görülmez)
+UYAP_SINIR_MB = 10                                # UYAP'a yüklenen dosya sınırı (meslektaşların bildirdiği)
+KUCULTULEN = [0, 0]                               # (küçültülen görsel sayısı, kazanılan bayt) — cevir() sıfırlar
+
+
+def kucult(png, w_pt, h_pt):
+    """PNG'yi sayfada kaplayacağı boyuta (GORSEL_DPI) indirir; gerekmiyorsa ya da Pillow yoksa aynen döner.
+    UDF yalnız PNG taşıdığından kameradan gelen 4000 piksellik fotoğraf JPEG'deki boyutunun birkaç katına
+    çıkıyordu (06.10.2026: 6 fotoğraflı 13,6 MB'lık belge 51,6 MB UDF oldu, UYAP'a yüklenemedi)."""
+    if not w_pt or not h_pt:
+        return png
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(png))
+        hedef = int(w_pt / 72.0 * GORSEL_DPI + 0.5)
+        if im.width <= hedef * 1.15:              # zaten yeterince küçük: yeniden kodlama yok
+            return png
+        boy = max(1, int(im.height * hedef / im.width + 0.5))
+        if im.mode not in ('RGB', 'RGBA', 'L', 'LA'):
+            im = im.convert('RGBA' if 'transparency' in im.info or im.mode in ('P', 'PA') else 'RGB')
+        im = im.resize((hedef, boy), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, 'PNG', optimize=True)
+        out = buf.getvalue()
+        if len(out) < len(png):
+            KUCULTULEN[0] += 1
+            KUCULTULEN[1] += len(png) - len(out)
+            return out
+    except Exception:
+        pass
+    return png
+
+
 def to_png(data, name, warn):
     """UDF yalnız PNG taşır (derlemdeki 417 görselin tamamı PNG)."""
     kind = _img_kind(data)
@@ -734,6 +767,7 @@ def _image_run(node, ctx, warn):
     if not w_pt or not h_pt:
         px = struct.unpack('>II', data[16:24])
         w_pt, h_pt = px[0] * 0.75, px[1] * 0.75               # 96 dpi varsayımı
+    data = kucult(data, w_pt, h_pt)
     out = {'image': {'data': base64.encodebytes(data).decode('ascii'), 'w': w_pt, 'h': h_pt}}
     if anchor:
         out['anchor'] = anchor
@@ -1204,6 +1238,7 @@ def parse_table(tbl, ctx, warn):
             for g in tbl.findall(f'{w("tblGrid")}/{w("gridCol")}')]
     raw = []
     cell_border = []                              # hücre düzeyinde kenarlık: True=çizgisiz
+    cell_drawn = []                               # hücre kendi kenarlığını çiziyor mu (en az iki kenar)
     for tr in tbl.findall(w('tr')):
         min_h = 0.0
         th = tr.find(f'{w("trPr")}/{w("trHeight")}')
@@ -1217,6 +1252,8 @@ def parse_table(tbl, ctx, warn):
             sides = _borders(tcb) if tcb is not None else {}
             cell_border.append(bool(sides) and all(sides.get(k) in ('none', 'nil')
                                                    for k in ('top', 'left', 'bottom', 'right')))
+            cell_drawn.append(sum(1 for k in ('top', 'left', 'bottom', 'right')
+                                  if sides.get(k) not in (None, 'none', 'nil')) >= 2)
             if tcpr is not None:
                 gs = tcpr.find(w('gridSpan'))
                 if gs is not None:
@@ -1294,6 +1331,10 @@ def parse_table(tbl, ctx, warn):
     kind = _border_kind(borders)
     if cell_border and all(cell_border):          # bütün hücreler "kenarlık yok": Word tabloyu çizgisiz gösterir
         kind = 'borderNone'
+    elif kind != 'borderCell' and cell_drawn and sum(cell_drawn) * 2 >= len(cell_drawn):
+        # Kenarlığı tabloda değil hücrelerde tanımlı tablo (web sayfasından / yapay zekâ sohbetinden
+        # yapıştırılan HTML tabloları böyle gelir): Word her hücreyi kutu içinde çizer (06.10.2026: çizgisiz çıkıyordu)
+        kind = 'borderCell'
     for r in rows:                                # iç tablolar dış tablonun kenarlık türünü alır
         for c in r['cells']:
             if c.get('table'):
@@ -2012,6 +2053,7 @@ def cevir(docx, cikti, sayfa_no='otomatik', hucre_dolgusu='bant', yan_gorsel=Fal
     """
     warn = set()
     NONBMP_SEEN.clear()
+    KUCULTULEN[:] = [0, 0]
     try:
         blocks, info, hf = read_document(docx, warn, hucre_dolgusu, yan_gorsel)
     except FileNotFoundError:
@@ -2032,6 +2074,13 @@ def cevir(docx, cikti, sayfa_no='otomatik', hucre_dolgusu='bant', yan_gorsel=Fal
     check(xml, cdata)
     with zipfile.ZipFile(cikti, 'w', zipfile.ZIP_DEFLATED) as z:
         z.writestr('content.xml', xml.encode('utf-8'))
+    if KUCULTULEN[0]:
+        warn.add(f'{KUCULTULEN[0]} görsel sayfadaki boyutuna göre küçültüldü ({GORSEL_DPI} dpi; baskıda fark '
+                 f'görülmez), dosya {KUCULTULEN[1] / 1048576:.1f} MB küçüldü')
+    mb = os.path.getsize(cikti) / 1048576
+    if mb > UYAP_SINIR_MB:
+        warn.add(f'UDF dosyası {mb:.1f} MB; UYAP {UYAP_SINIR_MB} MB üzerindeki dosyayı kabul etmeyebilir. '
+                 'Görsellerin bir kısmını ayrı ek olarak (PDF) yüklemeyi düşünün')
     return {'paragraf': sum(1 for b in blocks if b['type'] == 'p'),
             'tablo': sum(1 for b in blocks if b['type'] == 'tbl'),
             'sayfa_sonu': sum(1 for b in blocks if b['type'] == 'pb'),

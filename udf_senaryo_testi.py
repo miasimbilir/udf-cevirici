@@ -1227,6 +1227,44 @@ def _(d):
     return lambda u: [] if u.texts() == ['Çankaya / ANKARA', 'VEKİLİ'] else [f'metin: {u.texts()}']
 
 
+@senaryo('tablo_hucre_kenarligi', 'Kenarlığı yalnız hücrelerde tanımlı tablo (webden/yapay zekâdan yapıştırılan) → çizgili kalmalı')
+def _(d):
+    kenar = ''.join(f'<w:{k} w:val="inset" w:sz="6" w:space="0" w:color="A0A0A0"/>' for k in ('top', 'left', 'bottom', 'right'))
+    hucre = lambda t: (f'<w:tc><w:tcPr><w:tcW w:w="3000" w:type="dxa"/><w:tcBorders>{kenar}</w:tcBorders>'
+                       f'<w:vAlign w:val="center"/></w:tcPr>{P(t)}</w:tc>')
+    tablo = ('<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblCellSpacing w:w="15" w:type="dxa"/>'
+             '<w:tblBorders>' + ''.join(f'<w:{k} w:val="outset" w:sz="6" w:space="0" w:color="A0A0A0"/>'
+                                         for k in ('top', 'left', 'bottom', 'right')) + '</w:tblBorders></w:tblPr>'
+             '<w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>'
+             f'<w:tr>{hucre("İnceleme Unsuru")}{hucre("Açıklama")}</w:tr>'
+             f'<w:tr>{hucre("Hologram")}{hucre("Bulunmamaktadır")}</w:tr></w:tbl>')
+    make_docx(d, tablo + P('son'))
+
+    def exp(u):
+        t = u.els.find('table')
+        return [] if t is not None and t.get('border') == 'borderCell' else [f'kenarlık: {t.get("border") if t is not None else None}']
+    return exp
+
+
+@senaryo('gorsel_cozunurluk', 'Kameradan gelen büyük fotoğraf sayfadaki boyutuna (200 dpi) indirilmeli; UDF şişmemeli')
+def _(d):
+    data = png(3000, 2000, (90, 120, 150))
+    make_docx(d, P(inline('rId10', 150, 100)), media={'rId10': ('kamera.png', data)})
+
+    def exp(u):
+        ims = u.images('body')
+        if len(ims) != 1:
+            return ['görsel kayboldu']
+        px = struct.unpack('>II', base64.b64decode(ims[0].get('imageData'))[16:24])
+        try:
+            import PIL  # noqa: F401  (küçültme Pillow ister; yoksa görsel aynen kalır)
+        except ImportError:
+            return []
+        hedef = int(150 / 72 * 200 + 0.5)
+        return [] if abs(px[0] - hedef) <= 2 else [f'genişlik {px[0]} px (beklenen ~{hedef})']
+    return exp
+
+
 @senaryo('pandoc_belgesi', 'Pandoc üretimi DOCX (tablo, görsel, dipnot, iç içe liste, alıntı)')
 def _(d):
     if not shutil.which('pandoc'):
