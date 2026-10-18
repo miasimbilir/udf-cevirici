@@ -42,7 +42,7 @@ except Exception:
     TEMEL_PENCERE, SURUKLENEBILIR = tk.Tk, False
 
 UYGULAMA_ADI = "UDF Çevirici"
-SURUM = "1.2.2"
+SURUM = "1.2.3"
 YAZAR = "Av. Arb. Mevlana İbrahim Asım Bilir"
 YAZAR_EK = "av.ibrahimbilir@gmail.com"
 TELIF = "© 2026 Av. Arb. Mevlana İbrahim Asım Bilir"

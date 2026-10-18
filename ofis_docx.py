@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import zipfile
 
 UZANTILAR = ('.doc', '.dot', '.docm', '.dotx', '.dotm', '.rtf', '.odt', '.pages')
 ZAMAN = 180                                       # saniye; büyük belgede Word yavaş açılabilir
@@ -62,9 +63,14 @@ def _calistir(cmd, env=None):
 # ---------------------------------------------------------------- macOS
 # Word ve Pages korumalı alanda (sandbox) çalışır. AppleScript'in "open" komutuyla verilen dosya Word'de
 # "Dosyaya Erişim İzni Ver" penceresi açıyor; Finder'daki çift tıklamanın yaptığı gibi `open -b` ile
-# açılan dosya ise izin sormadan açılıyor (03.10.2026'da sınandı). Word sonucu yalnız kendi klasörüne
-# (~/Library/Containers/com.microsoft.Word/Data/tmp) izinsiz yazabiliyor; Pages ise /tmp'ye yazabiliyor
-# (Pages'in kendi klasörüne macOS bize erişim vermiyor).
+# açılan dosya ise izin sormadan açılıyor (03.10.2026'da sınandı). Word'ün kaydedebildiği yerler:
+#   - kendi klasörü (Containers/com.microsoft.Word): macOS artık bize okutmuyor (18.10.2026, macOS 27:
+#     "Operation not permitted"; 1.2.1 ve 1.2.2 bu yüzden Mac'te .doc çeviremiyordu);
+#   - başka bir yol: "Dosyaya Erişim İzni Ver" penceresi açıyor;
+#   - `open -b` ile açtığı dosyanın yolu (kapattıktan sonra da). Bu yüzden önce boş bir .docx'i açıp
+#     kapattırıyor, sonra belgeyi o yola kaydettiriyoruz. Belgenin kendi yoluna kaydetmek .doc'ta oluyor
+#     ama .rtf'de Word yine Kaydet paneli açıyor (18.10.2026 sınandı).
+# Pages ise /tmp'ye yazabiliyor.
 _AS_BEKLE = '''
         repeat 240 times
             if (exists document ad) then exit repeat
@@ -76,14 +82,20 @@ _AS_WORD = '''on run argv
     set ad to item 1 of argv
     set hedef to item 2 of argv
     set kapat to item 3 of argv
-    set yeni to item 4 of argv
-    tell application id "com.microsoft.Word"''' + _AS_BEKLE + '''
+    set bos to item 4 of argv
+    tell application id "com.microsoft.Word"
+        -- Boş .docx yalnız Word'e o yola yazma izni kazandırmak için açılır; hemen kapatılır.
+        repeat 240 times
+            if (exists document bos) then exit repeat
+            delay 0.5
+        end repeat
+        close document bos saving no''' + _AS_BEKLE + '''
         save as d file name hedef file format format document
         -- Yalnız bizim (benzersiz adlı) belgemiz kapatılır; "active document" kullanıcının belgesi olabilir.
         -- Farklı kaydedince belgenin adı değişir: önce yeni adla, olmazsa eski başvuruyla denenir.
         -- "count of documents" Word'de hata verir (-1708); "count documents" çalışır (18.10.2026 sınandı).
         try
-            close document yeni saving no
+            close document bos saving no
         on error
             try
                 close d saving no
@@ -113,31 +125,67 @@ def _mac_calisiyor(bundle):
 
 def _mac(kaynak, bundle, betik):
     d = tempfile.mkdtemp(prefix='udf_ofis_', dir='/tmp' if os.path.isdir('/tmp') else None)
-    ad = 'udf-cevirici-' + uuid.uuid4().hex[:8] + os.path.splitext(kaynak)[1].lower()   # kullanıcının açık belgeleriyle karışmasın
+    kok = 'udf-cevirici-' + uuid.uuid4().hex[:8]          # kullanıcının açık belgeleriyle karışmasın
+    ad = kok + os.path.splitext(kaynak)[1].lower()
     kopya = os.path.join(d, ad)
-    if bundle == WORD_MAC:
-        kap = os.path.expanduser('~/Library/Containers/com.microsoft.Word/Data/tmp')
-        hedef = os.path.join(kap, os.path.splitext(ad)[0] + '.docx')
-    else:
-        hedef = os.path.join(d, 'cikti.docx')
+    hedef = os.path.join(d, kok + '.docx' if bundle == WORD_MAC else 'cikti.docx')
     try:
-        (shutil.copytree if os.path.isdir(kaynak) else shutil.copy2)(kaynak, kopya)   # eski .pages klasör olabilir
+        if os.path.isdir(kaynak):                            # eski .pages klasör olabilir
+            shutil.copytree(kaynak, kopya)
+        else:
+            shutil.copyfile(kaynak, kopya)
         kapat = '0' if _mac_calisiyor(bundle) else '1'       # kullanıcı zaten açmışsa programı kapatma
-        kod, msg = _calistir(['open', '-g', '-b', bundle, kopya])
+        acilacak, bos = [kopya], None
+        if bundle == WORD_MAC:
+            bos = _bos_docx(hedef)
+            acilacak.insert(0, hedef)
+        kod, msg = _calistir(['open', '-g', '-b', bundle] + acilacak)
         if kod != 0:
             return None, msg or 'program açılamadı'
         kod, msg = _calistir(['osascript', '-e', betik, ad, hedef, kapat, os.path.basename(hedef)])
-        if os.path.exists(hedef) and os.path.getsize(hedef) > 0:
+        if _docx_mi(hedef):
             with open(hedef, 'rb') as f:
-                return f.read(), None
+                veri = f.read()
+            if veri != bos:                                  # Word kaydetmediyse boş belge yerinde durur
+                return veri, None
         if '-1743' in msg or 'not allowed' in msg.lower():
             return None, ('macOS izin vermedi. Sistem Ayarları → Gizlilik ve Güvenlik → Otomasyon bölümünde '
                           'UDF Çevirici için ' + ('Word' if bundle == WORD_MAC else 'Pages') + ' kutusunu açın')
+        if '-1712' in msg:
+            prog = 'Word' if bundle == WORD_MAC else 'Pages'
+            return None, f'{prog} yanıt vermedi. {prog} içinde açık bir pencere varsa kapatıp yeniden deneyin'
         return None, msg or f'çıkış kodu {kod}'
     finally:
         shutil.rmtree(d, ignore_errors=True)
-        if bundle == WORD_MAC and os.path.exists(hedef):
-            os.remove(hedef)
+
+
+def _bos_docx(yol):
+    """Boş bir .docx yazar; içeriğini döndürür."""
+    w = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
+    with zipfile.ZipFile(yol, 'w') as z:
+        z.writestr('[Content_Types].xml',
+                   '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/'
+                   '2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-'
+                   'package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
+                   '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-'
+                   'officedocument.wordprocessingml.document.main+xml"/></Types>')
+        z.writestr('_rels/.rels',
+                   '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/'
+                   'package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/'
+                   'officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>')
+        z.writestr('word/document.xml',
+                   f'<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="{w}"><w:body><w:p/></w:body>'
+                   '</w:document>')
+    with open(yol, 'rb') as f:
+        return f.read()
+
+
+def _docx_mi(yol):
+    try:
+        with zipfile.ZipFile(yol) as z:
+            return 'word/document.xml' in z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return False
 
 
 # ---------------------------------------------------------------- Windows
