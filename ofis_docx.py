@@ -54,7 +54,7 @@ def _libreoffice():
 
 
 def _calistir(cmd, env=None):
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=ZAMAN, env=env,
+    r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=ZAMAN, env=env,
                        creationflags=_NO_WINDOW)
     return r.returncode, (r.stderr or r.stdout or '').strip()
 
@@ -76,10 +76,19 @@ _AS_WORD = '''on run argv
     set ad to item 1 of argv
     set hedef to item 2 of argv
     set kapat to item 3 of argv
+    set yeni to item 4 of argv
     tell application id "com.microsoft.Word"''' + _AS_BEKLE + '''
         save as d file name hedef file format format document
-        close active document saving no
-        if kapat is "1" then quit saving no
+        -- Yalnız bizim (benzersiz adlı) belgemiz kapatılır; "active document" kullanıcının belgesi olabilir.
+        -- Farklı kaydedince belgenin adı değişir: önce yeni adla, olmazsa eski başvuruyla denenir.
+        try
+            close document yeni saving no
+        on error
+            try
+                close d saving no
+            end try
+        end try
+        if kapat is "1" and (count of documents) is 0 then quit saving no
     end tell
 end run'''
 
@@ -90,7 +99,7 @@ _AS_PAGES = '''on run argv
     tell application id "com.apple.Pages"''' + _AS_BEKLE + '''
         export d to (POSIX file hedef) as Microsoft Word
         close d saving no
-        if kapat is "1" then quit
+        if kapat is "1" and (count of documents) is 0 then quit
     end tell
 end run'''
 
@@ -116,7 +125,7 @@ def _mac(kaynak, bundle, betik):
         kod, msg = _calistir(['open', '-g', '-b', bundle, kopya])
         if kod != 0:
             return None, msg or 'program açılamadı'
-        kod, msg = _calistir(['osascript', '-e', betik, ad, hedef, kapat])
+        kod, msg = _calistir(['osascript', '-e', betik, ad, hedef, kapat, os.path.basename(hedef)])
         if os.path.exists(hedef) and os.path.getsize(hedef) > 0:
             with open(hedef, 'rb') as f:
                 return f.read(), None
@@ -131,6 +140,9 @@ def _mac(kaynak, bundle, betik):
 
 
 # ---------------------------------------------------------------- Windows
+# Quit([ref]0): PowerShell 5.1'de Quit(0) "Use [ref]" hatası veriyor, görünmez Word açık kalıyordu ve bu
+# hata asıl hatayı ("Parola yanlış") örtüyordu (18.10.2026 Windows denemesi). Kapatma hatası artık yutulur.
+# Betiğin içine çift tırnak konmaz: -Command argümanı olarak geçerken kaçış sorunu çıkarabilir.
 _PS_WORD = r"""
 $ErrorActionPreference = 'Stop'
 $w = $null
@@ -138,11 +150,15 @@ try {
     $w = New-Object -ComObject Word.Application
     $w.Visible = $false
     $w.DisplayAlerts = 0
-    $d = $w.Documents.Open($env:UDF_KAYNAK, $false, $true, $false)
+    # Parolalı belgede Word görünmez bir parola penceresinde asılı kalmasın: yanlış parola verilir, hemen hata döner
+    $d = $w.Documents.Open($env:UDF_KAYNAK, $false, $true, $false, '__udf_parola_yok__')
     $d.SaveAs2($env:UDF_HEDEF, 16)
     $d.Close(0)
 } finally {
-    if ($w) { $w.Quit(0); [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) }
+    if ($w) {
+        try { $w.Quit([ref]0) } catch { }
+        try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($w) } catch { }
+    }
 }
 """
 
@@ -156,7 +172,9 @@ def _windows_word(kaynak, d):
             return f.read(), None
     if 'ComObject' in msg or '80040154' in msg or 'Word.Application' in msg:
         return None, 'Microsoft Word kurulu değil'
-    return None, msg or f'çıkış kodu {kod}'
+    if 'parola' in msg.lower() or 'password' in msg.lower():
+        return None, 'belge parolayla korunuyor; Word\'de açıp parolasını kaldırın'
+    return None, (msg.splitlines() or [''])[0].strip() or f'çıkış kodu {kod}'      # PowerShell'in ilk satırı yeter
 
 
 def _libre(kaynak, d):

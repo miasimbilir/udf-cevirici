@@ -11,8 +11,14 @@ echo.
 
 cd /d "%~dp0"
 
-REM --- Python var mi? ---------------------------------------------------
+REM --- Python var mi? (python.exe Store kisayolu calismiyorsa py baslaticisi) ---
+set "PY=python"
 python --version >nul 2>&1
+if errorlevel 1 (
+    py -3 --version >nul 2>&1
+    if not errorlevel 1 set "PY=py -3"
+)
+%PY% --version >nul 2>&1
 if errorlevel 1 (
     echo [HATA] Python bulunamadi.
     echo.
@@ -23,12 +29,12 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-for /f "delims=" %%v in ('python --version') do echo Python bulundu: %%v
+for /f "delims=" %%v in ('%PY% --version') do echo Python bulundu: %%v
 
 REM --- Gerekli paketler -------------------------------------------------
 echo.
 echo [1/4] Gerekli paketler kuruluyor (birkac dakika surebilir)...
-python -m pip install --quiet --upgrade pip pyinstaller tkinterdnd2 pillow
+%PY% -m pip install --quiet --upgrade pip pyinstaller tkinterdnd2 pillow
 if errorlevel 1 (
     echo [HATA] Paketler kurulamadi. Internet baglantinizi kontrol edin.
     pause
@@ -38,7 +44,7 @@ if errorlevel 1 (
 REM --- Tcl/Tk surumu ----------------------------------------------------
 echo.
 echo [2/4] Tcl/Tk surumu kontrol ediliyor...
-python -c "import tkinter; print('  Tcl/Tk', tkinter.TkVersion); exit(0 if tkinter.TkVersion>=8.6 else 1)"
+%PY% -c "import tkinter; print('  Tcl/Tk', tkinter.TkVersion); exit(0 if tkinter.TkVersion>=8.6 else 1)"
 if errorlevel 1 (
     echo [HATA] Tcl/Tk surumu cok eski. Python'u python.org surumuyle kurun.
     pause
@@ -48,7 +54,7 @@ if errorlevel 1 (
 REM --- Derle ------------------------------------------------------------
 echo.
 echo [3/4] Uygulama derleniyor...
-pyinstaller --noconfirm --clean --onefile --windowed ^
+%PY% -m PyInstaller --noconfirm --clean --onefile --windowed ^
   --name "UDF Cevirici" --icon ikon\uygulama.ico ^
   --version-file surum_bilgisi.txt ^
   --collect-all tkinterdnd2 ^

@@ -23,9 +23,10 @@ import webbrowser
 import zipfile
 from tkinter import filedialog, messagebox, ttk
 
-if getattr(sys, "frozen", False):                   # PyInstaller paketi
-    sys.path.insert(0, os.path.dirname(os.path.abspath(sys.executable)))
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# PyInstaller paketinde gömülü modüller kendiliğinden bulunur; programın bulunduğu klasör (çoğu zaman
+# İndirilenler) arama yoluna EKLENMEZ, oradaki aynı adlı bir .py yüklenmesin (18.10.2026 denetimi).
+if not getattr(sys, "frozen", False):
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import ofis_docx
 import udf_docx
@@ -41,7 +42,7 @@ except Exception:
     TEMEL_PENCERE, SURUKLENEBILIR = tk.Tk, False
 
 UYGULAMA_ADI = "UDF Çevirici"
-SURUM = "1.2.1"
+SURUM = "1.2.2"
 YAZAR = "Av. Arb. Mevlana İbrahim Asım Bilir"
 YAZAR_EK = "av.ibrahimbilir@gmail.com"
 TELIF = "© 2026 Av. Arb. Mevlana İbrahim Asım Bilir"
@@ -105,11 +106,13 @@ def bos_ad(klasor, ad, uzanti=".docx"):
     return aday
 
 
-def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant"):
+def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant", alinan=None):
     """Bir belgeyi çevirir ve DOĞRULAR. Doğrulama geçmezse çıktı bırakılmaz.
 
     Yönü uzantı belirler: .docx → .udf, .udf → .docx. Word'e çevirirken var olan bir Word
     belgesinin üzerine ASLA yazılmaz (asıl belge çoğu zaman UDF'nin yanında durur).
+    alinan: aynı toplu çeviride başka bir belgeye verilmiş çıktı yolları (küçük harfle). Aynı adlı iki
+    kaynak (Dilekçe.doc + Dilekçe.docx, ya da iki klasörden tek hedef klasöre) birbirinin UDF'sini ezmesin.
     Döner: {'kaynak', 'cikti', 'yon', 'tamam', 'ozet', 'uyarilar', 'dogrulama', 'hata'}
     """
     ad, uzanti = os.path.splitext(os.path.basename(kaynak.rstrip("/\\")))
@@ -121,7 +124,12 @@ def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant"):
     if uzanti.lower() not in (".docx", ".udf") and not ofis:
         s["hata"] = "yalnız Word (.docx, .doc, .rtf, .odt), Pages ve UDF belgeleri çevrilir."
         return s
+    alinan = alinan if alinan is not None else set()
     cikti = bos_ad(klasor, ad) if ters else os.path.join(klasor, ad + ".udf")
+    n = 2
+    while cikti.lower() in alinan:                          # bu turda başka bir belgenin çıktısı
+        cikti = os.path.join(klasor, f"{ad} ({n}){'.docx' if ters else '.udf'}")
+        n += 1
     s["cikti"] = cikti
     gecici = cikti + ".gecici"
     ara = None                                              # .doc/.rtf/.odt/.pages -> geçici .docx
@@ -148,6 +156,7 @@ def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant"):
         if ters and os.path.exists(cikti):                  # araya başka bir dosya girdiyse yine ezme
             cikti = s["cikti"] = bos_ad(klasor, ad)
         os.replace(gecici, cikti)
+        alinan.add(cikti.lower())
         s["tamam"] = True
     except (DonusumHatasi, udf_docx.DonusumHatasi, ofis_docx.OfisHatasi) as e:
         s["hata"] = str(e)
@@ -565,9 +574,12 @@ class Uygulama(TEMEL_PENCERE):
         threading.Thread(target=self._cevir_isi, args=(list(self.yollar),) + ayar, daemon=True).start()
 
     def _cevir_isi(self, yollar, klasor, sayfa_no, dolgu):
-        sonuclar = []
-        for i, y in enumerate(yollar, 1):
-            sonuclar.append(belge_cevir(y, klasor, sayfa_no, dolgu))
+        # UDF'ler önce çevrilir: listede hem "A.docx" hem "A.udf" varsa, A.udf okunmadan A.docx'in
+        # çıktısı onun üzerine yazılmasın (18.10.2026 denetimi).
+        sira = sorted(range(len(yollar)), key=lambda k: 0 if yollar[k].lower().endswith(".udf") else 1)
+        sonuclar, alinan = [None] * len(yollar), set()
+        for i, k in enumerate(sira, 1):
+            sonuclar[k] = belge_cevir(yollar[k], klasor, sayfa_no, dolgu, alinan)
             self.after(0, lambda n=i: self.ilerleme.configure(value=n))
         self.after(0, lambda: self._cevir_bitti(sonuclar))
 

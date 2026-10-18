@@ -152,11 +152,11 @@ def tw(pt):
 def img_kind(data):
     """(uzantı, içerik türü, (px_w, px_h) ya da None)"""
     if data[:8] == b'\x89PNG\r\n\x1a\n':
-        return 'png', 'image/png', struct.unpack('>II', data[16:24])
+        return 'png', 'image/png', (struct.unpack('>II', data[16:24]) if len(data) >= 24 else None)
     if data[:2] == b'\xff\xd8':
         return 'jpeg', 'image/jpeg', None
     if data[:6] in (b'GIF87a', b'GIF89a'):
-        return 'gif', 'image/gif', struct.unpack('<HH', data[6:10])
+        return 'gif', 'image/gif', (struct.unpack('<HH', data[6:10]) if len(data) >= 10 else None)
     if data[:2] == b'BM':
         return 'bmp', 'image/bmp', None
     return None, None, None
@@ -664,19 +664,29 @@ class Cevirici:
 
     # ---------- tablo ----------
     def cell_fill(self, cell):
-        """Hücredeki bütün yazı aynı zemin rengini taşıyorsa o renk (gerçek hücre dolgusuna çevrilir)."""
-        colors = set()
+        """Hücredeki bütün yazı aynı zemin rengini taşıyorsa o renk (gerçek hücre dolgusuna çevrilir).
+        Hücrede başka renkle vurgulanmış bir kelime olsa da docx_udf'nin zemin bandı (paragrafın iki
+        ucunda aynı renkli NBSP dilimleri) hücre rengini gösterir; yoksa bant NBSP'leri Word'e sızıyordu."""
+        colors, band, uniform = set(), set(), True
         for p in cell.findall('paragraph'):
             pa = self.para_attrs(p)
+            lv = [l for l in self.leaves(p) if l.tag != 'image' and self.sl(l).strip('\n')]
+            if lv and all(self.sl(l).strip(NBSP + '\n') == '' for l in (lv[0], lv[-1])):
+                ca, cb = (_hex(self.char_attrs(l, pa).get('background') or '') for l in (lv[0], lv[-1]))
+                if ca and ca == cb and ca != 'FFFFFF':
+                    band.add(ca)
             for leaf in self.leaves(p):
                 if leaf.tag == 'image' or not self.sl(leaf).strip(' \t\n'):
                     continue
                 bg = self.char_attrs(leaf, pa).get('background')
                 col = _hex(bg) if bg not in (None, '') else None
                 if not col or col == 'FFFFFF':
-                    return None
-                colors.add(col)
-        return colors.pop() if len(colors) == 1 else None
+                    uniform = False
+                else:
+                    colors.add(col)
+        if uniform and len(colors) == 1:
+            return colors.pop()
+        return band.pop() if len(band) == 1 else None
 
     @staticmethod
     def _fracs(row, cells, tspans):
@@ -974,8 +984,11 @@ class Cevirici:
                     if body.startswith('<w:p><w:pPr>'):
                         i = body.index('</w:pPr>') + len('</w:pPr>')
                         body = body[:i] + anchor + body[i:]
-                    else:
-                        body = f'<w:p>{anchor}</w:p>' + body
+                    elif body.startswith('<w:p>'):
+                        body = '<w:p>' + anchor + body[len('<w:p>'):]
+                    else:                            # tabloyla başlıyor: antet için 1 puntoluk taşıyıcı paragraf
+                        body = ('<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="20" w:lineRule="exact"/>'
+                                f'</w:pPr>{anchor}</w:p>' + body)
                 body = body or '<w:p/>'
                 self.pkg.add(f'word/{kind}{n}.xml', f'{XMLDECL}<w:{tag} {NSDECL}>{body}</w:{tag}>',
                              CT + kind + '+xml')

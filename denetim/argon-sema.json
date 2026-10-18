@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "properties": {
+    "bulgular": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ciddiyet": {"type": "string", "enum": ["yuksek", "orta", "dusuk"]},
+          "dosya": {"type": "string"},
+          "satir": {"type": "string", "description": "satır ya da satır aralığı, ör. 120-135"},
+          "baslik": {"type": "string"},
+          "aciklama": {"type": "string", "description": "sorun ne, hangi durumda ortaya çıkar, etkisi"},
+          "oneri": {"type": "string"},
+          "emin": {"type": "boolean", "description": "kodda doğruladıysan true, şüpheliyse false"}
+        },
+        "required": ["ciddiyet", "dosya", "satir", "baslik", "aciklama", "oneri", "emin"]
+      }
+    },
+    "tavsiyeler": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "baslik": {"type": "string"},
+          "neden": {"type": "string"},
+          "emek": {"type": "string", "enum": ["az", "orta", "cok"]},
+          "ayrinti": {"type": "string"}
+        },
+        "required": ["baslik", "neden", "emek", "ayrinti"]
+      }
+    },
+    "genel_not": {"type": "string"}
+  },
+  "required": ["bulgular", "tavsiyeler", "genel_not"]
+}

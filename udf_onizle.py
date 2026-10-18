@@ -13,6 +13,7 @@ Dış kütüphane gerekmez; sayfalar Java tarafında ayrılır.
 import argparse
 import glob
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,9 @@ def editor_home():
              '/Applications/Uyap Doküman Editörü.app/Contents',
              os.path.expanduser('~/Applications/Uyap Doküman Editörü.app/Contents')]
     cands += glob.glob(r'C:\Program Files*\UYAP*\*Edit*') + glob.glob(r'C:\UYAP*\*Edit*')
+    # tek klasörlü kurulum (C:\Program Files\UYAP Doküman Editörü gibi) — Windows'ta sınanmadı
+    cands += glob.glob(r'C:\Program Files*\*UYAP*') + glob.glob(r'C:\*UYAP*') + \
+        glob.glob(os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', '*UYAP*'))
     for c in cands:
         if c and glob.glob(os.path.join(c, '**', 'editor_lib.jar'), recursive=True):
             return c
@@ -43,8 +47,8 @@ def onizle(udf, out_dir=None, olcek=1.0, tek=False):
     if not home:
         raise OnizlemeHatasi('UYAP Doküman Editörü bulunamadı (UYAP_EDITOR_HOME ile yol verin).')
     jars = sorted(glob.glob(os.path.join(home, '**', '*.jar'), recursive=True))
-    jars = [j for j in jars if os.path.basename(j) != 'updater.jar' and '.jre' not in j.lower()
-            and 'plugins' not in j.lower()]
+    jars = [j for j in jars if os.path.basename(j) != 'updater.jar' and 'plugins' not in j.lower()
+            and not any(k == 'jre' or k.endswith('.jre') for k in re.split(r'[\\/]', j.lower()))]
     java = next(iter(glob.glob(os.path.join(home, '**', 'bin', 'java'), recursive=True)
                      + glob.glob(os.path.join(home, '**', 'bin', 'java.exe'), recursive=True)), None) \
         or shutil.which('java')
@@ -68,7 +72,7 @@ def onizle(udf, out_dir=None, olcek=1.0, tek=False):
     if os.name == 'nt':                                  # Windows'ta konsol penceresi açılmasın
         kw['creationflags'] = 0x08000000
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, **kw)
+        r = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=300, **kw)
     except subprocess.TimeoutExpired:
         raise OnizlemeHatasi('Editör 300 sn içinde yanıt vermedi (bir iletişim kutusu beklemiş olabilir).')
     lines = r.stderr.splitlines()

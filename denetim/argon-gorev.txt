@@ -1,0 +1,30 @@
+"UDF Çevirici" adlı bir masaüstü programının TAMAMININ kod denetimini yapıyorsun. Çalışma alanı bu klasör; README.md programı ve UDF biçiminin sınırlarını anlatıyor, DERLEME.md derlemeyi.
+
+Program: Python + tkinter (+tkinterdnd2, Pillow), PyInstaller ile Windows .exe ve macOS .app olarak dağıtılıyor. Hedef kullanıcı teknik bilgisi olmayan avukatlar. Word (.docx; .doc/.rtf/.odt/.pages önce kurulu Word/Pages ile .docx'e çevrilir) belgesini UYAP Doküman Editörü'nün UDF biçimine (zip içinde content.xml; düz metin CDATA'da, biçim startOffset/length ile), UDF'yi de Word'e çeviriyor. Her çıktı kaynağıyla doğrulanıyor; doğrulama geçmezse dosya yazılmıyor.
+
+Dosyalar:
+- uygulama.py: arayüz, iş parçacığı, güncelleme denetimi, sonuç/uyarı gösterimi.
+- docx_udf.py: Word→UDF çekirdeği. udf_docx.py: UDF→Word çekirdeği. udf_dogrula.py: iki yönün doğrulayıcısı.
+- ofis_docx.py: .doc/.rtf/.odt/.pages'i kurulu Word/Pages/LibreOffice'e .docx yaptırır (Mac: open + AppleScript; Windows: PowerShell COM).
+- udf_onizle.py + udf_onizle/UdfRender.java: kuruluysa UYAP Editör'ün Java çizim motoruyla PNG önizleme.
+- udf_senaryo_testi.py, udf_docx_testi.py: test takımları (58 ve 77 senaryo, hepsi geçiyor).
+- derle-macos.sh, derle-windows.bat, plist_yaz.py, .github/workflows/derle.yml: derleme.
+
+Bilinçli kararlar (hata sayma, ama mantığı yanlış uygulanmışsa söyle): UDF'de görseller yalnız PNG; BMP dışı karakter □ olur (Editör açamıyor); NumberSetted=n listeyi n+1'den başlatır; Editör harfli listeyi Türk alfabesiyle sayar; sekme konumu Editör'de sol girintiden ölçülür; mediaSizeName kâğıt kodudur (1=A4, 2=A5…); ofsetler UTF-16 birimidir; bu kurallar Editör'de deneyle bulundu. Python 3.9 uyumu zorunlu.
+
+Kurallar:
+- Yalnız bu klasörü oku. Dışındaki hiçbir dosyayı okuma. Hiçbir dosyayı değiştirme, komut çalıştırma, ağa çıkma.
+- .class ve ikon dosyalarına bakma.
+
+Bakılacaklar:
+1. Doğruluk: çevirinin metni ya da biçimi sessizce bozabileceği yerler (ofset hesabı, liste numaralandırma, tablo/birleştirme, üst-altbilgi, alanlar, görsel), doğrulayıcının yakalayamayacağı durumlar (doğrulayıcı neyi kontrol etmiyor?), istisnalar ve kilitlenme.
+2. Veri güvenliği: kullanıcının belgesinin üzerine yazma ya da kaybetme ihtimali, geçici dosyalar, yarım kalan yazma, aynı adlı dosyalar, salt okunur/ağ/OneDrive klasörleri, uzun ve Türkçe karakterli yollar (macOS NFD, Windows MAX_PATH).
+3. Güvenlik: kötü niyetli ya da bozuk .docx/.udf (zip bombası, çok büyük görsel, XML varlıkları/XXE, yol geçişi), AppleScript/PowerShell komutuna dosya adı enjeksiyonu, alt süreç çağrıları, güncelleme denetimi.
+4. Arayüz: tkinter'ın ana iş parçacığı dışından çağrılması, uzun işte donma, iptal, hata mesajlarının teknik olmayan kullanıcıya anlaşılırlığı.
+5. Windows ve macOS farkları (yol, kodlama, alt süreç penceresi, PyInstaller ile paketlenince dosya yolları); Windows'ta henüz sınanmamış yollar: Word COM ile .doc çevirisi, PDF görseli PowerShell ile PNG, Editör kurulum yeri tahmini.
+6. Test takımlarının kör noktaları: hangi önemli davranış hiç sınanmıyor?
+7. Derleme ve dağıtım betikleri.
+
+Her bulguyu kodda satırıyla doğrula. Emin olmadıklarını emin=false ile işaretle. En ciddiden başla, abartma: "yuksek" yalnız gerçek kullanıcının belgesini bozan/kaybeden ya da güvenlik açığı olan durumlar için.
+
+Ayrıca "tavsiyeler" alanında, denetimden bağımsız olarak, programı daha iyi yapacak en değerli 5-10 öneriyi ver (özellik, mimari, test, dağıtım, kullanıcı deneyimi); her birinde neden ve yaklaşık emeği yaz. Yazım dili Türkçe.

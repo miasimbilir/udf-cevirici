@@ -22,6 +22,7 @@ Kullanım:
     python3 araclar/udf_dogrula.py belge.udf belge.docx      (UDF -> DOCX denetimi)
 Çıkış kodu 0 = GEÇTİ, 1 = KALDI.
 """
+import base64
 import posixpath
 import re
 import sys
@@ -152,6 +153,14 @@ def dogrula(docx, udf):
     return not errs, out
 
 
+def _img_ok(b64):
+    try:
+        data = base64.b64decode(re.sub(r'\s+', '', b64 or ''))
+    except (ValueError, TypeError):
+        return False
+    return data[:8] == b'\x89PNG\r\n\x1a\n' or data[:2] in (b'\xff\xd8', b'BM') or data[:6] in (b'GIF87a', b'GIF89a')
+
+
 def dogrula_docx(udf, docx):
     """Ters yön: UDF'den üretilen DOCX'in denetimi. (gecti_mi, satirlar) döndürür."""
     out, errs = [], []
@@ -235,7 +244,8 @@ def dogrula_docx(udf, docx):
         body_els = [e for e in els if e.tag not in ('header', 'footer')]
         # iç içe tablo sayılmaz: dikey birleştirme taklidi Word'de gerçek birleştirmeye açılır
         u_tbl = sum(1 for e in body_els if e.tag == 'table')
-        u_img = sum(1 for e in body_els for i in e.iter('image') if (i.get('imageData') or '').strip())
+        # udf_docx okunamayan görseli uyarıyla atlar; yalnız tanınan görseller sayılır (18.10.2026)
+        u_img = sum(1 for e in body_els for i in e.iter('image') if _img_ok(i.get('imageData')))
         d_tbl = len(doc.findall(f'{w("body")}/{w("tbl")}'))
         d_img = sum(1 for _ in doc.iter('{http://schemas.openxmlformats.org/drawingml/2006/main}blip'))
         out.append(f'Sayım: UDF {u_tbl} tablo / {u_img} gövde görseli; DOCX {d_tbl} tablo / {d_img} gövde görseli '

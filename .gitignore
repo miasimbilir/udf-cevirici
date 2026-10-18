@@ -9,3 +9,6 @@ sinama.txt
 # Deneme belgeleri kişisel veri içerebilir — asla depoya girmesin
 *.docx
 *.udf
+
+# Denetçinin ham çıktısı (yalnız yerelde)
+denetim/*-ham.json

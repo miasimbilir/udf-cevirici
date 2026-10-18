@@ -2,7 +2,7 @@
 # UDF Çevirici — macOS için .app üretir (çalıştığı Mac'in mimarisi için).
 # macOS'un sistem Python'u eski Tcl/Tk 8.5 ile gelir ve pencereyi BOŞ çizer; güncel Tk'li
 # bir Python gerekir:   brew install python-tk@3.13
-set -e
+set -eo pipefail
 cd "$(dirname "$0")"
 PY="${PYTHON:-/opt/homebrew/bin/python3.13}"
 [ -x "$PY" ] || PY="$(command -v python3.13 || command -v python3)"
@@ -26,6 +26,7 @@ codesign --force --deep --sign - "dist/UDF Cevirici.app"
 codesign --verify --deep "dist/UDF Cevirici.app" && echo "imza geçerli (ad-hoc)"
 
 echo "--- sınama:"
+rm -f sinama.txt                                   # önceki derlemenin raporu "geçti" sayılmasın
 "dist/UDF Cevirici.app/Contents/MacOS/UDF Cevirici" --sinama --rapor sinama.txt | tail -3
 grep -q "SINAMA TAMAM" sinama.txt || { echo "HATA: sınama başarısız; paketi dağıtmayın"; exit 1; }
 

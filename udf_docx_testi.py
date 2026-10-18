@@ -721,6 +721,44 @@ def _(path):
     return exp
 
 
+@ornek('hucre_dolgusu_vurgulu', 'Zemin bandlı hücrede başka renkle vurgulu kelime: NBSP bandı Word\'e sızmaz (18.10.2026)')
+def _(path):
+    b = B()
+    bg, sari = ' background="-2500135"', ' background="-256"'     # D9D9D9, FFFF00
+    band = NBSP * 8
+    cell1 = b.para([(band, bg), ('Kısa ', bg), ('vurgulu', sari), (band, bg)],
+                   ' Alignment="1" LeftIndent="0.5" RightIndent="0.5"')
+    cell2 = b.para([('dolgusuz', '')], ' Alignment="0" LeftIndent="5.4" RightIndent="5.4"')
+    b.save(path, b.table([(' rowType="dataRow"', [cell1, cell2])], [100, 100]))
+
+    def exp(d):
+        e = []
+        tcs = d.body.find(wq('tbl')).find(wq('tr')).findall(wq('tc'))
+        shd = tcs[0].find(f'{wq("tcPr")}/{wq("shd")}')
+        if shd is None or shd.get(wq('fill')) != 'D9D9D9':
+            e.append('hücre dolgusu kurulmadı')
+        if NBSP in d.text(d.find('vurgulu')):
+            e.append('zemin bandı (NBSP) metne sızdı')
+        return e
+    return exp
+
+
+@ornek('gorsel_okunamayan', 'Okunamayan görsel: uyarıyla atlanır, belge yine çevrilir (18.10.2026)')
+def _(path):
+    b = B()
+    b.save(path, b.para([('önce', '')], ' Alignment="0"') + b.para([b.image(b'bozuk veri', 40.0, 40.0)], ' Alignment="0"')
+           + b.para([b.image(ileri.png(20, 10), 20.0, 10.0)], ' Alignment="0"') + b.para([('sonra', '')], ' Alignment="0"'))
+
+    def exp(d):
+        e = []
+        if 'okunamayan bir görsel atlandı' not in d.warn:
+            e.append(f'uyarı yok: {d.warn}')
+        if len([n for n in d.names if n.startswith('word/media/')]) != 1:
+            e.append('sağlam görsel taşınmadı')
+        return e
+    return exp
+
+
 def bad_inputs(work):
     res = []
     cases = {'bozuk.udf': b'bu bir zip degil', 'olmayan.udf': None}
@@ -736,7 +774,8 @@ def bad_inputs(work):
     for name in list(cases) + ['icerik_yok.udf', 'bozuk_xml.udf']:
         src = os.path.join(work, name)
         r = subprocess.run([sys.executable, os.path.join(HERE, 'udf_docx.py'), src, '-o', src + '.docx'],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding='utf-8', errors='replace',
+                           env=dict(os.environ, PYTHONIOENCODING='utf-8'))
         errs = []
         if r.returncode == 0:
             errs.append('çıkış kodu 0')

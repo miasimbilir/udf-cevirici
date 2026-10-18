@@ -55,6 +55,10 @@ STYLES = (
 TEXT_W = (11906 - 2 * 1417) / 20.0          # metin genişliği, punto (453.6)
 
 
+# Alt süreç çıktısı her sistemde UTF-8 (Windows'ta yerel kodlama cp1254 olunca emoji/Türkçe uyarı
+# okunamıyordu — 18.10.2026 Windows denemesi)
+UTF8 = {'text': True, 'encoding': 'utf-8', 'errors': 'replace', 'env': dict(os.environ, PYTHONIOENCODING='utf-8')}
+
 # ---------- küçük yardımcılar ----------
 def esc(s):
     return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -1292,6 +1296,98 @@ def _(d):
     return exp
 
 
+# ---------- 18.10.2026: Argon (Gemini) denetiminden çıkan ve düzeltilen hatalar ----------
+def _fld(*parts):
+    """Karmaşık alan; yönerge birden çok instrText run'ına bölünebilir (Word bunu yapıyor)."""
+    return ('<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            + ''.join(f'<w:r><w:instrText xml:space="preserve">{x}</w:instrText></w:r>' for x in parts)
+            + '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' + R('1')
+            + '<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+
+
+def _hf(u, tag):
+    e = u.els.find(tag)
+    return (None, []) if e is None else (e.get('pageNumber-spec'), [u.ptext(p) for p in e.iter('paragraph')])
+
+
+@senaryo('gorsel_goreli_iliski', 'İlişki hedefi göreli yol ("../word/media/…"): görsel düşmemeli')
+def _(d):
+    data = png(120, 60)
+    make_docx(d, P('Önce') + P(inline('rId10', 60, 30)) + P('Sonra'), media={'rId10': ('image1.png', data)})
+    with zipfile.ZipFile(d) as z:
+        parts = {n: z.read(n) for n in z.namelist()}
+    parts['word/_rels/document.xml.rels'] = parts['word/_rels/document.xml.rels'].replace(
+        b'Target="media/image1.png"', b'Target="../word/./media/image1.png"')
+    with zipfile.ZipFile(d, 'w', zipfile.ZIP_DEFLATED) as z:
+        for n, b in parts.items():
+            z.writestr(n, b)
+
+    def exp(u):
+        ims = u.images('body')
+        return [] if len(ims) == 1 and img_bytes(ims[0]) == data else [f'görsel taşınmadı ({len(ims)}); {u.warn}']
+    return exp
+
+
+@senaryo('altbilgi_metin_ve_sayfa_no', 'Altbilgide "Av. Ali Kaya - Sayfa" + PAGE: metin silinmemeli')
+def _(d):
+    make_docx(d, P('Gövde'), footer=P(R('Av. Ali Kaya - Sayfa ') + _fld(' PAGE ')))
+
+    def exp(u):
+        spec, tx = _hf(u, 'footer')
+        e = []
+        if not any('Av. Ali Kaya' in t for t in tx):
+            e.append(f'altbilgi metni kayboldu: {tx}')
+        if spec in (None, 'BSP32_0'):
+            e.append(f'sayfa numarası yok: {spec}')
+        return e
+    return exp
+
+
+@senaryo('ustbilgi_sayfa_no', 'Sayfa numarası yalnız üstbilgide, altbilgi metinli: numara ve büro adı kalmalı')
+def _(d):
+    make_docx(d, P('Gövde'), header=P(R('Bilir Hukuk Bürosu ') + _fld(' PAGE ')), footer=P('Adres satırı'))
+
+    def exp(u):
+        e = []
+        _, htx = _hf(u, 'header')
+        spec, ftx = _hf(u, 'footer')
+        if not any('Bilir Hukuk Bürosu' in t for t in htx):
+            e.append(f'üstbilgi metni kayboldu: {htx}')
+        if spec in (None, 'BSP32_0'):
+            e.append(f'sayfa numarası altbilgiye yazılmadı: {spec}')
+        if not any('Adres' in t for t in ftx):
+            e.append(f'altbilgi metni: {ftx}')
+        return e
+    return exp
+
+
+@senaryo('alan_yonergesi_bolunmus', 'PAGE yönergesi iki run\'a bölünmüş ("PA" + "GE"): sabit "1" yazılmamalı')
+def _(d):
+    make_docx(d, P('Gövde'), footer=P(R('Sayfa ') + _fld(' PA', 'GE ')))
+
+    def exp(u):
+        spec, tx = _hf(u, 'footer')
+        e = []
+        if any('1' in t for t in tx):
+            e.append(f'alan önbelleği metne girdi: {tx}')
+        if spec in (None, 'BSP32_0'):
+            e.append(f'sayfa numarası tanınmadı: {spec}')
+        return e
+    return exp
+
+
+@senaryo('tablo_dar_son_sutun', 'Çok dar son sütun: columnSpans sıfır/negatif olmamalı')
+def _(d):
+    make_docx(d, TBL([[P(f'h{i}') for i in range(5)]], [1248] * 4 + [20]))
+
+    def exp(u):
+        t = u.els.find('table')
+        sp = [int(x) for x in t.get('columnSpans').split(',')]
+        e = [] if min(sp) >= 1 and sum(sp) == 100 * len(sp) else [f'columnSpans {sp}']
+        return e
+    return exp
+
+
 def bad_inputs(workdir):
     """Geçersiz girdiler: temiz hata mesajı (traceback yok) ve sıfırdan farklı çıkış kodu."""
     res = []
@@ -1302,7 +1398,7 @@ def bad_inputs(workdir):
         p = os.path.join(workdir, name)
         if data is not None:
             open(p, 'wb').write(data)
-        r = subprocess.run([sys.executable, TOOL, p, '-o', p + '.udf'], capture_output=True, text=True)
+        r = subprocess.run([sys.executable, TOOL, p, '-o', p + '.udf'], capture_output=True, **UTF8)
         errs = []
         if r.returncode == 0:
             errs.append('çıkış kodu 0')
@@ -1336,7 +1432,7 @@ def main():
             rows.append((name, note, 'ATLANDI', ['gerekli araç yok']))
             continue
         r = subprocess.run([sys.executable, TOOL, docx, '-o', udf] + SCEN_ARGS.get(name, []),
-                           capture_output=True, text=True)
+                           capture_output=True, **UTF8)
         if r.returncode != 0:
             last = (r.stderr.strip().splitlines() or r.stdout.strip().splitlines() or ['?'])[-1]
             rows.append((name, note, 'ÇÖKTÜ', [last[:160]]))
@@ -1359,7 +1455,7 @@ def main():
                 errs = [f'udf_dogrula çöktü: {type(ex).__name__}: {ex}'[:200]]
         if a.editor and not errs:
             rr = subprocess.run([sys.executable, os.path.join(HERE, 'udf_onizle.py'), udf,
-                                 '-o', os.path.join(work, '_onizleme')], capture_output=True, text=True)
+                                 '-o', os.path.join(work, '_onizleme')], capture_output=True, **UTF8)
             if rr.returncode != 0:
                 errs = ['Editör motoru bu UDF\'yi açamadı/çizemedi: '
                         + ((rr.stderr or rr.stdout).strip().splitlines() or ['?'])[0][:140]]

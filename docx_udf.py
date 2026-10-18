@@ -50,6 +50,7 @@ import argparse
 import base64
 import io
 import os
+import posixpath
 import re
 import shutil
 import struct
@@ -480,7 +481,9 @@ def part_rels(z, part):
         if rel.get('TargetMode') == 'External':
             continue
         t = rel.get('Target') or ''
-        out[rel.get('Id')] = t.lstrip('/') if t.startswith('/') else f'{d}/{t}'
+        # '../media/x.png', './header1.xml' gibi göreli hedefler normalleştirilir (bazı üreticiler yazıyor;
+        # normalleştirilmeyince görsel/üstbilgi uyarısız düşüyordu — 18.10.2026 Argon denetimi)
+        out[rel.get('Id')] = posixpath.normpath(t.lstrip('/') if t.startswith('/') else posixpath.join(d, t))
     return out
 
 
@@ -513,6 +516,7 @@ function W($o,$t){$k=$asOp.MakeGenericMethod($t).Invoke($null,@($o));$k.Wait(-1)
 function A($o){$k=$asAct.Invoke($null,@($o));$k.Wait(-1)|Out-Null}
 [Windows.Storage.StorageFile,Windows.Storage,ContentType=WindowsRuntime]|Out-Null
 [Windows.Data.Pdf.PdfDocument,Windows.Data.Pdf,ContentType=WindowsRuntime]|Out-Null
+[Windows.Storage.Streams.IRandomAccessStream,Windows.Storage.Streams,ContentType=WindowsRuntime]|Out-Null
 $f=W ([Windows.Storage.StorageFile]::GetFileFromPathAsync('%SRC%')) ([Windows.Storage.StorageFile])
 $d=W ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($f)) ([Windows.Data.Pdf.PdfDocument])
 $pg=$d.GetPage(0)
@@ -558,11 +562,11 @@ def _convert_png(data):
                     .replace('%PX%', str(PDF_PX))
             else:
                 ps = ("Add-Type -AssemblyName System.Drawing; "
-                      "$i=[System.Drawing.Image]::FromFile('%s'); "
-                      "$i.Save('%s',[System.Drawing.Imaging.ImageFormat]::Png); $i.Dispose()" % (src, dst))
+                      "$i=[System.Drawing.Image]::FromFile($env:UDF_SRC); "
+                      "$i.Save($env:UDF_DST,[System.Drawing.Imaging.ImageFormat]::Png); $i.Dispose()")
             subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
-                           creationflags=_NO_WINDOW)
+                           creationflags=_NO_WINDOW, env=dict(os.environ, UDF_SRC=src, UDF_DST=dst))
         if os.path.exists(dst):
             with open(dst, 'rb') as f:
                 out = f.read()
@@ -760,6 +764,8 @@ def _image_run(node, ctx, warn):
     try:
         data = ctx['zip'].read(target)
     except KeyError:
+        if warn is not None:
+            warn.add('belgede adı geçen bir görsel dosyanın içinde bulunamadı; atlandı')
         return None
     data = to_png(data, target, warn)
     if data is None:
@@ -809,6 +815,41 @@ def _is_page_field(instr):
     return bool(tok) and tok[0].upper() in PAGE_FIELDS
 
 
+def _field_instrs(el):
+    """Öğedeki alan yönergeleri: karmaşık alanda begin..separate arasındaki bütün instrText parçaları
+    birleştirilir (Word yönergeyi " PA" + "GE " diye bölebiliyor), basit alanda w:instr."""
+    out, stack = [], []                           # stack: açık alanların yönerge parçaları (None = okundu)
+    for n in el.iter():
+        if n.tag == w('fldChar'):
+            t = n.get(w('fldCharType'))
+            if t == 'begin':
+                stack.append([])
+            elif stack:
+                if stack[-1] is not None:         # ilk separate ya da end: yönerge tamamlandı
+                    out.append(''.join(stack[-1]))
+                    stack[-1] = None
+                if t == 'end':
+                    stack.pop()
+        elif n.tag == w('instrText'):
+            if not stack:                         # alan önceki paragrafta başlamış
+                stack.append([])
+            if stack[-1] is not None:
+                stack[-1].append(n.text or '')
+        elif n.tag == w('fldSimple'):
+            out.append(n.get(w('instr')) or '')
+    out += [''.join(x) for x in stack if x]
+    return out
+
+
+_PAGE_WORDS = {'sayfa', 'page', 'of', 'sf', 's', 'syf', 'toplam', 'pg', 'p'}
+
+
+def _page_pattern_only(rest):
+    """Sayfa alanı çıkınca kalan metin yalnız "Sayfa  / ", "- -", "Page  of " gibi bir kalıp mı?"""
+    toks = re.findall(r'[^\W\d_]+', rest.lower())
+    return len(rest.strip()) <= 24 and all(t in _PAGE_WORDS for t in toks)
+
+
 def _iter_runs(p):
     """Paragrafın kendi run'ları. Atlananlar: metin kutusu içindekiler (ayrı paragraf
     olur), taşıma kaynağı (w:moveFrom), PAGE/NUMPAGES alan önbelleği."""
@@ -820,6 +861,7 @@ def _iter_runs(p):
         if _is_page_field(fs.get(w('instr'))):
             skip.update(id(r) for r in fs.iter(w('r')))
     stack = []                                    # iç içe alanlar (içindekiler > PAGEREF): düzey başına gizleme
+    instr = []                                    # her düzeyin şimdiye kadarki yönergesi
     for r in p.iter(w('r')):
         if id(r) in skip:
             continue
@@ -828,13 +870,17 @@ def _iter_runs(p):
             t = fc.get(w('fldCharType'))
             if t == 'begin':
                 stack.append(False)
+                instr.append('')
             elif t == 'end' and stack:
                 stack.pop()
+                instr.pop()
             continue
         it = r.find(w('instrText'))
         if it is not None:
-            if stack and _is_page_field(it.text):
-                stack[-1] = True
+            if stack:
+                instr[-1] += it.text or ''
+                if _is_page_field(instr[-1]):
+                    stack[-1] = True
             continue
         if any(stack):
             continue
@@ -876,8 +922,7 @@ def parse_paragraph(p, ctx, in_cell=False, extra=None, warn=None):
     lines = [[]]                                  # öğe: run listesi ya da 'PB'
     boxes = []
     float_img, block_imgs = None, []
-    has_pagefld = any(_is_page_field(it.text) for it in p.iter(w('instrText'))) or \
-        any(_is_page_field(fs.get(w('instr'))) for fs in p.iter(w('fldSimple')))
+    has_pagefld = any(_is_page_field(x) for x in _field_instrs(p))
     for r in _iter_runs(p):
         rpr = r.find(w('rPr'))
         fmt = {k: base.get(k) for k in FMT_KEYS if base.get(k)}
@@ -1007,7 +1052,7 @@ def parse_paragraph(p, ctx, in_cell=False, extra=None, warn=None):
         if first and label:
             d['literal'] = True
             if merged:
-                merged.insert(0, [label + '\t', dict(merged[0][1])])
+                merged.insert(0, [label + '\t', {k: v for k, v in merged[0][1].items() if k != 'image'}])
             else:
                 merged.append([label + '\t', {}])
         if not first:
@@ -1286,7 +1331,8 @@ def parse_table(tbl, ctx, warn):
     total = sum(grid) or 1
     spans = [int(round(g / total * 100 * ncol)) for g in grid] if ncol else []
     if spans:
-        spans[-1] += 100 * ncol - sum(spans)
+        spans = [max(1, x) for x in spans]        # çok dar sütun 0'a yuvarlanmasın
+        spans[spans.index(max(spans))] += 100 * ncol - sum(spans)   # fark en geniş sütuna
     text_w = ctx.get('text_w', 450.0)
     filled = False
     for r in raw:
@@ -1625,19 +1671,24 @@ def read_hf(z, ctx, info, doc_rels, warn):
                           [q for tr in b.findall(w('tr')) for c in tr.findall(w('tc'))
                            for q in cell_paragraphs(c)]):
                     paras.extend(x for x in parse_paragraph(p, ctx, warn=warn) if x['type'] == 'p')
-            xml = raw.decode('utf-8', 'replace')
-            has_page = any(_is_page_field(x) for x in re.findall(r'<w:instrText[^>]*>([^<]*)<', xml)
-                           + re.findall(r'w:instr="([^"]*)"', xml))
+            instrs = _field_instrs(root)
+            has_page = any(_is_page_field(x) for x in instrs)
             # "Sayfa 3 / 12" gibi yalnız sayfa numarası kalıbından ibaret paragraf: numarayı Editör
             # kendisi çizer; alan çıkınca geriye kalan "Sayfa  / " artığı yazılmaz.
             if has_page:                          # pageNumber-spec bitleri: 8 taban, 32 orta, 64 sağ, 2048 toplam
                 al = next((q['align'] for q in paras if q.get('pagefld')), 1)
-                total = any(x.strip().split()[:1] in (['NUMPAGES'], ['SECTIONPAGES'])
-                            for x in re.findall(r'<w:instrText[^>]*>([^<]*)<', xml)
-                            + re.findall(r'w:instr="([^"]*)"', xml))
+                total = any(x.strip().split()[:1] in (['NUMPAGES'], ['SECTIONPAGES']) for x in instrs)
                 has_page = 8 + {1: 32, 2: 64}.get(al, 0) + (2048 if total else 0)
-            paras = [q for q in paras if not (q.get('pagefld') and
-                     len(''.join(t for t, f in q['runs'] if 'image' not in f).strip()) <= 24)]
+            kept = []
+            for q in paras:
+                rest = ''.join(t for t, f in q['runs'] if 'image' not in f)
+                if q.get('pagefld') and _page_pattern_only(rest):
+                    continue
+                if q.get('pagefld') and rest.strip():
+                    warn.add(f'{"üstbilgideki" if kind == "header" else "altbilgideki"} sayfa numarasının '
+                             'yanındaki metin korundu; numarayı Editör altbilgide ayrı satırda çizer')
+                kept.append(q)
+            paras = kept
             if ctx.get('bg_found'):
                 bgs[typ] = ctx.pop('bg_found')
             ctx['bg_pick'] = None
@@ -1664,6 +1715,11 @@ def read_hf(z, ctx, info, doc_rels, warn):
         elif def_c:
             items = [def_c + (' startPage="2"',)]
         out[kind] = items
+    # Sayfa numarası yalnız üstbilgideyse kaybolmasın: UDF'de sayfa numarası altbilginin özniteliğidir
+    hp = next((x[1] for x in out.get('header', []) if x[1]), None)
+    if hp and not any(x[1] for x in out.get('footer', [])):
+        out['footer'] = [(x[0], hp, x[2]) for x in out.get('footer', [])] or [([], hp, '')]
+        warn.add('sayfa numarası Word\'de üstbilgideydi; UDF\'de altbilgiye yazıldı')
     # Editör'de tek sayfa arka planı vardır ve her sayfada görünür
     b_first, b_def = (bgs.get('first') if info['titlePg'] else None), bgs.get('default')
     bg = b_def or b_first
