@@ -81,6 +81,7 @@ _AS_WORD = '''on run argv
         save as d file name hedef file format format document
         -- Yalnız bizim (benzersiz adlı) belgemiz kapatılır; "active document" kullanıcının belgesi olabilir.
         -- Farklı kaydedince belgenin adı değişir: önce yeni adla, olmazsa eski başvuruyla denenir.
+        -- "count of documents" Word'de hata verir (-1708); "count documents" çalışır (18.10.2026 sınandı).
         try
             close document yeni saving no
         on error
@@ -88,7 +89,7 @@ _AS_WORD = '''on run argv
                 close d saving no
             end try
         end try
-        if kapat is "1" and (count of documents) is 0 then quit saving no
+        if kapat is "1" and (count documents) is 0 then quit saving no
     end tell
 end run'''
 
@@ -99,7 +100,7 @@ _AS_PAGES = '''on run argv
     tell application id "com.apple.Pages"''' + _AS_BEKLE + '''
         export d to (POSIX file hedef) as Microsoft Word
         close d saving no
-        if kapat is "1" and (count of documents) is 0 then quit
+        if kapat is "1" and (count documents) is 0 then quit
     end tell
 end run'''
 
