@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1600px;background:#fff;color:#1c2330;font-family:-apple-system,"Helvetica Neue",Arial,sans-serif;padding:76px 100px 64px}
+h1{font-size:64px;font-weight:700;letter-spacing:-.01em}
+.giris{font-size:32px;line-height:1.45;margin-top:22px;max-width:1300px;color:#333b48}
+.kesitler{display:flex;gap:44px;margin-top:48px}
+.kesit{flex:1}
+.kesit p{font-size:26px;color:#59616d;margin-bottom:12px}
+.kesit p b{color:#1c2330}
+.kesit img{width:100%;display:block;border:1px solid #d9dce1;border-radius:6px}
+.not{font-size:22px;color:#7a818c;margin-top:14px}
+ul{margin-top:44px;padding-left:34px}
+li{font-size:31px;line-height:1.4;margin:10px 0;color:#1c2330}
+.alt{margin-top:46px;padding-top:24px;border-top:1px solid #e3e5e9;display:flex;justify-content:space-between;font-size:25px;color:#59616d}
+</style></head><body>
+<h1>UDF Çevirici 1.2.4</h1>
+<p class="giris">Word’den UDF’ye çevirirken bazı belgelerde sayfa sayısı, madde numarası, tablo satırı ya da metin kutusu düşüyordu. Bu kayıpları giderdim, Windows ve Mac’te denedim.</p>
+<div class="kesitler">
+  <div class="kesit"><p><b>1.2.3</b> ile çevrilmiş hâli</p><img src="kesit-1.2.3.png"></div>
+  <div class="kesit"><p><b>1.2.4</b> ile çevrilmiş hâli</p><img src="kesit-1.2.4.png"></div>
+</div>
+<p class="not">Aynı Word belgesi, UYAP Doküman Editörü’nde açılmış hâliyle.</p>
+<ul>
+  <li>Web’den “Word’e aktar” ile indirilen belgeler artık boş çıkmıyor.</li>
+  <li>Form alanlı tablo satırları ile gruplanmış metin kutuları eksiksiz çevriliyor.</li>
+  <li>Aynı adda bir UDF varsa program sormadan üzerine yazmıyor.</li>
+  <li>Windows’ta .doc dosyalarındaki makrolar çeviri sırasında çalıştırılmıyor.</li>
+</ul>
+<div class="alt"><span>Ücretsiz, Windows ve Mac için: github.com/miasimbilir/udf-cevirici</span><span>Av. Mevlana İbrahim Asım Bilir</span></div>
+<script>window.onload=function(){document.title=document.documentElement.scrollHeight}</script></body></html>
