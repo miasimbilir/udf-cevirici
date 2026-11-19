@@ -64,10 +64,29 @@ def docx_words(path, ust_alt=False, ayir=False):
                   for t in r.iter(w('t'))} if ayir else set()
         for p in root.iter(w('p')):               # kelime run'lara bölünmüş olabilir: paragraf bazında birleştir
             inner = {id(t) for q in p.iter(w('p')) if q is not p for t in q.iter()}   # metin kutusu vb.
+            # noBreakHyphen: çevirici "-" yazar ("e-posta" iki kelime); ayırıcı sayılmazsa "eposta" aranır ve
+            # bölünmez kısa çizgi içeren her belge yanlış alarmla KALDI olur (17.11.2026 gece denetimi)
             out |= words(''.join((f' {t.text or ""} ' if id(t) in raised else (t.text or '')) if t.tag == w('t') else ' '
-                                 for t in p.iter() if t.tag in (w('t'), w('tab'), w('br'), w('cr'))
+                                 for t in p.iter() if t.tag in (w('t'), w('tab'), w('br'), w('cr'), w('noBreakHyphen'))
                                  and id(t) not in dead and id(t) not in inner))
     return out
+
+
+_SAYFA_KELIMELERI = {'SAYFA', 'PAGE', 'OF', 'SF', 'S', 'SYF', 'TOPLAM', 'PG', 'P'}
+MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
+
+
+def _docx_govde_gorsel(path):
+    """Word gövdesindeki görsel sayısı: a:blip ve v:imagedata; silinmiş (w:del) ve yedek gösterim
+    (mc:Fallback; aynı görselin eski tip kopyası) içindekiler sayılmaz."""
+    with zipfile.ZipFile(path) as z:
+        root = ET.fromstring(z.read('word/document.xml'))
+    skip = set()
+    for tag in (w('del'), f'{{{MC}}}Fallback'):
+        for el in root.iter(tag):
+            skip.update(id(x) for x in el.iter())
+    tags = ('{http://schemas.openxmlformats.org/drawingml/2006/main}blip', '{urn:schemas-microsoft-com:vml}imagedata')
+    return sum(1 for x in root.iter() if x.tag in tags and id(x) not in skip)
 
 
 def dogrula(docx, udf):
@@ -148,6 +167,18 @@ def dogrula(docx, udf):
                 f' ({e.get("startPage")}. sayfadan itibaren)' if e.get('startPage') else ''
             pn = ', sayfa numaralı' if (e.get('pageNumber-spec') or 'BSP32_0') != 'BSP32_0' else ''
             out.append(f'{ad}: {len(e.findall("paragraph"))} paragraf, {len(list(e.iter("image")))} görsel{rng}{pn}')
+    # Uyarı düzeyi (dosya yine yazılır): üst/altbilgi kelimeleri ve gövde görseli sayısı. Kesin hata yapılmaz,
+    # çünkü ilk sayfa/devam sayfası üstbilgisi ve "Sayfa X / Y" kalıbı bilinçli farklardır (Argon #11, 17.11.2026).
+    try:
+        hf = docx_words(docx, ust_alt=True) - dw - udf_words - _SAYFA_KELIMELERI
+        hf = {x for x in hf if not x.isdigit()}          # sayfa numarası alanının Word'deki değeri ("3 / 12")
+        if hf:
+            out.append(f'UYARI: üst/altbilgideki {len(hf)} kelime UDF\'de yok: ' + ', '.join(sorted(hf)[:8]))
+        d_img = _docx_govde_gorsel(docx)
+        if d_img > body_imgs:
+            out.append(f'UYARI: Word\'deki {d_img} gövde görselinden {d_img - body_imgs} tanesi UDF\'de yok')
+    except Exception:
+        pass
     out += [f'HATA: {e}' for e in errs]
     out.append('SONUÇ: ' + ('GEÇTİ' if not errs else 'KALDI'))
     return not errs, out
@@ -227,6 +258,19 @@ def dogrula_docx(udf, docx):
         t = cd16[2 * so:2 * (so + ln)].decode('utf-16-le', 'replace')
         pieces.append(f' {t} ' if c.get('superscript') or c.get('subscript') else t)
     uw = words(''.join(pieces))
+    # Hiçbir öğenin göstermediği CDATA metni Word'e geçmez; öğelere bakan kelime denetimi de onu görmez.
+    # Gerçek Editör dosyalarında denenemediği için şimdilik uyarı düzeyinde (17.11.2026 gece denetimi).
+    n16 = len(cd16) // 2
+    kapsanan = bytearray(n16)
+    for c in root.iter():
+        try:
+            so, ln = int(c.get('startOffset')), int(c.get('length'))
+        except (TypeError, ValueError):
+            continue
+        kapsanan[max(0, so):max(0, min(n16, so + ln))] = b'\x01' * max(0, min(n16, so + ln) - max(0, so))
+    acik = ''.join(cd16[2 * i:2 * i + 2].decode('utf-16-le', 'replace') if not kapsanan[i] else ' '
+                   for i in range(n16))
+    acik_kelime = words(acik) - uw
     try:
         dw = docx_words(docx, ust_alt=True, ayir=True) | docx_words(docx, ust_alt=True)
     except Exception as ex:
@@ -236,6 +280,10 @@ def dogrula_docx(udf, docx):
     if missing:
         errs.append(f'DOCX\'te bulunmayan {len(missing)} kelime: {", ".join(missing[:15])}'
                     + (' …' if len(missing) > 15 else ''))
+    acik_kelime -= dw
+    if acik_kelime:
+        out.append(f'UYARI: UDF\'de hiçbir öğenin göstermediği {len(acik_kelime)} kelime Word\'e geçmedi: '
+                   + ', '.join(sorted(acik_kelime)[:8]))
 
     # sayımlar
     els = root.find('elements')

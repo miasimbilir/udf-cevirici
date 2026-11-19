@@ -27,10 +27,14 @@ def editor_home():
     cands = [os.environ.get('UYAP_EDITOR_HOME'),
              '/Applications/Uyap Doküman Editörü.app/Contents',
              os.path.expanduser('~/Applications/Uyap Doküman Editörü.app/Contents')]
-    cands += glob.glob(r'C:\Program Files*\UYAP*\*Edit*') + glob.glob(r'C:\UYAP*\*Edit*')
-    # tek klasörlü kurulum (C:\Program Files\UYAP Doküman Editörü gibi) — Windows'ta sınanmadı
-    cands += glob.glob(r'C:\Program Files*\*UYAP*') + glob.glob(r'C:\*UYAP*') + \
+    # Yalnız Program Files ve kullanıcının kendi program klasörü aranır. C:\ köküne her kullanıcı klasör
+    # açabildiği için C:\*UYAP* aranmaz: oraya konan sahte jar önizlemede yüklenirdi (17.11.2026 gece denetimi).
+    # Tek klasörlü kurulum (C:\Program Files\UYAP Doküman Editörü gibi) da kapsanır. Windows'ta sınanmadı.
+    cands += glob.glob(r'C:\Program Files*\UYAP*\*Edit*') + glob.glob(r'C:\Program Files*\*UYAP*') + \
         glob.glob(os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', '*UYAP*'))
+    # Eski sürümlerin (4.x/5.3) kurulum yeri: joker yerine yalnız bu tam ad (19.11.2026 Windows denemesi;
+    # 1.2.x'teki "C:\UYAP*\*Edit*" kalıbı bu klasör adına hiç uymuyordu)
+    cands.append(r'C:\Uyap\Uyap Kelime Islemci')
     for c in cands:
         if c and glob.glob(os.path.join(c, '**', 'editor_lib.jar'), recursive=True):
             return c

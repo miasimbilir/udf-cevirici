@@ -226,6 +226,9 @@ class Cevirici:
         names = z.namelist()
         if 'content.xml' not in names:
             raise DonusumHatasi('arşivde content.xml yok; bu bir UYAP UDF belgesi değil.')
+        if z.getinfo('content.xml').file_size > 512 * 1024 * 1024:
+            # Küçük ama açılınca dev boyuta çıkan (zip bombası) ya da bozuk dosya belleği tüketmesin (Argon #17)
+            raise DonusumHatasi('UDF açıldığında çok büyük (512 MB üstü); bozuk ya da zararlı olabilir.')
         raw = z.read('content.xml')
         try:
             try:

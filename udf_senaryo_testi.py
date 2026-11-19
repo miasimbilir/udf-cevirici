@@ -1388,12 +1388,252 @@ def _(d):
     return exp
 
 
+# ---------- 17.11.2026: gece denetiminden (Fable) çıkan ve düzeltilen sessiz kayıplar ----------
+def _alan(yonerge, deger):
+    return ('<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            f'<w:r><w:instrText xml:space="preserve"> {yonerge} </w:instrText></w:r>'
+            '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' + R(deger)
+            + '<w:r><w:fldChar w:fldCharType="end"/></w:r>')
+
+
+@senaryo('govde_sayfa_alani', 'Gövdede NUMPAGES/PAGE alanı ("… 7 sayfadır"): sayı düşmemeli; altbilgi numarası sürmeli')
+def _(d):
+    make_docx(d, P(R('İşbu dilekçe ') + _alan('NUMPAGES', '7') + R(' sayfadır.'))
+              + P(R('Basit alan: ') + '<w:fldSimple w:instr=" PAGE ">' + R('3') + '</w:fldSimple>'),
+              footer=P(R('Sayfa ') + _fld(' PAGE ')))
+
+    def exp(u):
+        t, e = u.texts(), []
+        if 'İşbu dilekçe 7 sayfadır.' not in t or 'Basit alan: 3' not in t:
+            e.append(f'gövdedeki sayfa alanının değeri kayboldu: {t}')
+        spec, ftx = _hf(u, 'footer')
+        if spec in (None, 'BSP32_0') or any('1' in x for x in ftx):
+            e.append(f'altbilgi sayfa numarası bozuldu: {spec} {ftx}')
+        if not any('gövdedeki sayfa' in x for x in u.warn):
+            e.append(f'sabit yazılan sayfa sayısı için UYARI yok: {u.warn}')
+        return e
+    return exp
+
+
+@senaryo('alan_pageref_bolunmus', 'PAGEREF yönergesi "PAGE" + "REF …" diye bölünmüş: sayfa alanı sanılıp metni atılmamalı')
+def _(d):
+    make_docx(d, P('Gövde'), footer=P(R('Bkz. s. ') + _fld(' PAGE', 'REF _Toc12 \\h ')))
+
+    def exp(u):
+        spec, tx = _hf(u, 'footer')
+        e = []
+        if not any('Bkz. s. 1' in t for t in tx):
+            e.append(f'PAGEREF değeri atıldı: {tx}')
+        if spec not in (None, 'BSP32_0'):
+            e.append(f'PAGEREF sayfa numarası alanı sanıldı: {spec}')
+        return e
+    return exp
+
+
+@senaryo('silinen_gorsel_satir_sonu', 'Değişiklik izleme: silinen run içindeki görsel, satır sonu ve sekme geri gelmemeli')
+def _(d):
+    make_docx(d, P(R('Kalan metin') + '<w:del w:id="2" w:author="a"><w:r><w:delText>silinen</w:delText></w:r>'
+                   + inline('rId10', 60, 30) + '<w:r><w:br/></w:r><w:r><w:tab/></w:r></w:del>' + R(' devam')),
+              media={'rId10': ('image1.png', png(120, 60))})
+
+    def exp(u):
+        e = []
+        if u.images():
+            e.append('silinmiş görsel belgeye geri geldi')
+        if u.texts() != ['Kalan metin devam']:
+            e.append(f'metin: {u.texts()}')
+        return e
+    return exp
+
+
+@senaryo('metin_kutusu_grup', 'Gruplanmış iki metin kutusu + görsel: iki kutunun metni de gelmeli, görsel için uyarı')
+def _(d):
+    kutu = lambda ic: f'<wps:wsp><wps:spPr/><wps:txbx><w:txbxContent>{ic}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp>'
+    vkutu = lambda ic: f'<v:shape style="width:140pt;height:47pt"><v:textbox><w:txbxContent>{ic}</w:txbxContent></v:textbox></v:shape>'
+    k1, k2 = P('BİRİNCİ KUTU'), P('İKİNCİ KUTU') + TBL([[P('KUTU TABLOSU')]], [3000]) + P('')
+    resim = ('<pic:pic><pic:nvPicPr><pic:cNvPr id="0" name=""/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill>'
+             '<a:blip r:embed="rId10"/></pic:blipFill><pic:spPr/></pic:pic>')
+    grup = ('<w:r><mc:AlternateContent><mc:Choice Requires="wpg"><w:drawing><wp:anchor distT="0" distB="0" '
+            'distL="0" distR="0" simplePos="0" relativeHeight="2" behindDoc="0" locked="0" layoutInCell="1" '
+            'allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="column"><wp:posOffset>0'
+            '</wp:posOffset></wp:positionH><wp:positionV relativeFrom="paragraph"><wp:posOffset>0</wp:posOffset>'
+            '</wp:positionV><wp:extent cx="3600000" cy="600000"/><wp:wrapNone/><wp:docPr id="5" name="Grup"/>'
+            '<a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">'
+            '<wpg:wgp xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup">'
+            + kutu(k1) + kutu(k2) + resim + '</wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing>'
+            '</mc:Choice><mc:Fallback><w:pict><v:group>' + vkutu(k1) + vkutu(k2) + '</v:group></w:pict>'
+            '</mc:Fallback></mc:AlternateContent></w:r>')
+    make_docx(d, P(R('Önce ') + grup + R('sonra')) + P('Bitiş'), media={'rId10': ('image1.png', png(120, 60))})
+
+    def exp(u):
+        t, e = u.alltext(), []
+        for s in ('BİRİNCİ KUTU', 'İKİNCİ KUTU', 'KUTU TABLOSU'):
+            if t.count(s) != 1:
+                e.append(f'{s!r} {t.count(s)} kez geçiyor (1 olmalı)')
+        if 'Önce sonra' not in t:
+            e.append(f'taşıyan paragraf bozuldu: {u.texts()}')
+        if not any('şekil' in x for x in u.warn):
+            e.append(f'gruptaki görsel için UYARI yok: {u.warn}')
+        return e
+    return exp
+
+
+@senaryo('gomulu_nesne', 'Gömülü nesne (w:object; Excel tablosu vb.): önizleme görseli taşınmalı, sessizce düşmemeli')
+def _(d):
+    nesne = ('<w:r><w:object w:dxaOrig="1800" w:dyaOrig="900"><v:shape id="o1" type="#_x0000_t75" '
+             'style="width:90pt;height:45pt" o:ole=""><v:imagedata r:id="rId10" o:title=""/></v:shape>'
+             '<o:OLEObject Type="Embed" ProgID="Excel.Sheet.12" ShapeID="o1" DrawAspect="Content" '
+             'ObjectID="_1" r:id="rId11"/></w:object></w:r>')
+    emf = nesne.replace('rId10', 'rId12')
+    make_docx(d, P(R('Hesap tablosu: ') + nesne) + P(R('İkinci: ') + emf),
+              media={'rId10': ('image1.png', png(180, 90)),
+                     'rId12': ('image2.emf', b'\x01\x00\x00\x00' + b'\x00' * 120)})
+
+    def exp(u):
+        im, e = u.images('body'), []
+        if len(im) != 1 or abs(float(im[0].get('width')) - 90) > 0.6:
+            e.append(f'gömülü nesnenin görseli taşınmadı ({len(im)}); uyarılar: {u.warn}')
+        if not any('görsel' in x for x in u.warn):
+            e.append(f'çizilemeyen nesne için UYARI yok: {u.warn}')
+        return e
+    return exp
+
+
+@senaryo('gorsel_baglantili', 'Bağlantılı (dosyaya gömülmemiş) görsel: taşınamaz, UYARI verilmeli')
+def _(d):
+    make_docx(d, P('Önce') + P(inline('rId40', 60, 30).replace('r:embed=', 'r:link=')) + P('Sonra'),
+              links={'rId40': 'file:///C:/logo.png'})
+
+    def exp(u):
+        e = []
+        if u.images():
+            e.append('bağlantılı görsel gömülmüş görünüyor')
+        if not any('bulunamadı' in x for x in u.warn):
+            e.append(f'UYARI yok: {u.warn}')
+        if u.texts()[0] != 'Önce' or u.texts()[-1] != 'Sonra':
+            e.append(f'metin: {u.texts()}')
+        return e
+    return exp
+
+
+@senaryo('tablo_grid_before', 'Satır soldan içeride başlıyor (w:gridBefore): hücreler sola, yanlış sütuna kaymamalı')
+def _(d):
+    tc = lambda t: f'<w:tc><w:tcPr/>{P(t)}</w:tc>'
+    make_docx(d, '<w:tbl><w:tblPr><w:tblStyle w:val="TabloKlavuzu"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+                 '<w:tblGrid><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>'
+                 f'<w:tr>{tc("Tarih")}{tc("Borç")}{tc("Alacak")}</w:tr>'
+                 f'<w:tr><w:trPr><w:gridBefore w:val="1"/></w:trPr>{tc("1.250,00")}{tc("750,00")}</w:tr></w:tbl>')
+
+    def exp(u):
+        rows = u.els.find('table').findall('row')
+        hucre = [[''.join(u.ptext(p) for p in c.iter('paragraph')) for c in r.findall('cell')] for r in rows]
+        return [] if hucre == [['Tarih', 'Borç', 'Alacak'], ['', '1.250,00', '750,00']] else [f'hücreler: {hucre}']
+    return exp
+
+
+@senaryo('liste_stil_baglantili', 'Liste stiline bağlı numaralandırma (w:numStyleLink): numaralar düşmemeli')
+def _(d):
+    num = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering {NSDECL}>'
+           '<w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/><w:styleLink w:val="Maddeler"/>'
+           '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>'
+           '<w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>'
+           '<w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="multilevel"/>'
+           '<w:numStyleLink w:val="Maddeler"/></w:abstractNum>'
+           '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>'
+           '<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>')
+    make_docx(d, LI('Taraflar', 2) + LI('Konu', 2) + P('Düz paragraf'), numbering=num)
+
+    def exp(u):
+        ps = list(u.body())
+        kotu = [u.ptext(p) for p in ps[:2] if p.get('Numbered') != 'true' or p.get('NumberType') != 'NUMBER_TYPE_NUMBER_DOT']
+        return [f'liste numarası düştü: {kotu}'] if kotu else []
+    return exp
+
+
+@senaryo('bolunmez_kisa_cizgi','Bölünmez kısa çizgi (w:noBreakHyphen): "-" yazılır, doğrulama yanlış alarm vermemeli')
+def _(d):
+    make_docx(d, P('<w:r><w:t>e</w:t><w:noBreakHyphen/><w:t xml:space="preserve">posta adresi</w:t></w:r>'))
+    return lambda u: [] if u.texts() == ['e-posta adresi'] else [f'metin: {u.texts()}']
+
+
+
+# ---------- 17.11.2026: gece denetiminin açık önerilerinden Mac'te yapılanlar ----------
+@senaryo('bmp_disi_harf', 'Süslü (BMP dışı) harf 𝐀𝐁𝐂: □ değil düz harf yazılmalı, doğrulama geçmeli')
+def _(d):
+    make_docx(d, P('\U0001d400\U0001d401\U0001d402 kalın başlık ve \U0001d7cf. madde'))
+    return lambda u: [] if u.texts() == ['ABC kalın başlık ve 1. madde'] else [f'metin: {u.texts()}']
+
+
+@senaryo('tablo_sdt_satir', 'İçerik denetimine (w:sdt) sarılı tablo satırı ve hücresi düşmemeli')
+def _(d):
+    tc = lambda t: f'<w:tc><w:tcPr/>{P(t)}</w:tc>'
+    sdt = lambda ic: f'<w:sdt><w:sdtPr/><w:sdtContent>{ic}</w:sdtContent></w:sdt>'
+    make_docx(d, '<w:tbl><w:tblPr><w:tblStyle w:val="TabloKlavuzu"/><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+                 '<w:tblGrid><w:gridCol w:w="4000"/><w:gridCol w:w="4000"/></w:tblGrid>'
+                 f'<w:tr>{tc("Ad")}{tc("Soyad")}</w:tr>'
+                 + sdt(f'<w:tr>{tc("Ayşe")}{tc("Kaya")}</w:tr>')
+                 + f'<w:tr>{tc("Mehmet")}{sdt(tc("Demir"))}</w:tr></w:tbl>')
+
+    def exp(u):
+        rows = u.els.find('table').findall('row')
+        hucre = [[''.join(u.ptext(p) for p in c.iter('paragraph')) for c in r.findall('cell')] for r in rows]
+        return [] if hucre == [['Ad', 'Soyad'], ['Ayşe', 'Kaya'], ['Mehmet', 'Demir']] else [f'hücreler: {hucre}']
+    return exp
+
+
+@senaryo('denklem_uyari', 'Word denklemi (m:oMath) taşınamaz: UYARI verilmeli, çevresindeki metin kalmalı')
+def _(d):
+    m = 'xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"'
+    make_docx(d, P(R('Faiz: ') + f'<m:oMath {m}><m:r><m:t>x=a+b</m:t></m:r></m:oMath>' + R(' olarak hesaplanır.')))
+
+    def exp(u):
+        e = []
+        if not any('denklem' in x for x in u.warn):
+            e.append(f'denklem için UYARI yok: {u.warn}')
+        if u.texts() != ['Faiz:  olarak hesaplanır.']:
+            e.append(f'metin: {u.texts()}')
+        return e
+    return exp
+
+
+
+@senaryo('liste_onekli_madde', '"Madde %1." ön ekli numara: "Madde" düşmemeli, sabit etiket + UYARI (gece bulgusu 15)')
+def _(d):
+    num = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:numbering {NSDECL}>'
+           '<w:abstractNum w:abstractNumId="0"><w:multiLevelType w:val="multilevel"/>'
+           '<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="Madde %1."/>'
+           '<w:pPr><w:ind w:left="1134" w:hanging="1134"/></w:pPr></w:lvl>'
+           '<w:lvl w:ilvl="1"><w:start w:val="1"/><w:numFmt w:val="lowerLetter"/><w:lvlText w:val="%2)"/>'
+           '<w:pPr><w:ind w:left="1494" w:hanging="360"/></w:pPr></w:lvl></w:abstractNum>'
+           '<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num></w:numbering>')
+    make_docx(d, LI('Taraflar', 1) + LI('Konu', 1) + LI('alt bent', 1, 1) + LI('Süre', 1), numbering=num)
+
+    def exp(u):
+        e, t = [], u.texts()
+        if t != ['Madde 1.\tTaraflar', 'Madde 2.\tKonu', 'alt bent', 'Madde 3.\tSüre']:
+            e.append(f'metin: {t}')
+        ps = list(u.body())
+        if ps[0].get('Numbered') == 'true':
+            e.append('ön ekli kalem yerel liste yazıldı ("Madde" düşer)')
+        if ps[2].get('Numbered') != 'true':
+            e.append('ön eksiz alt düzey yerel liste olmalıydı')
+        if not any('ön ekli' in x for x in u.warn):
+            e.append(f'UYARI yok: {u.warn}')
+        return e
+    return exp
+
+
 def bad_inputs(workdir):
     """Geçersiz girdiler: temiz hata mesajı (traceback yok) ve sıfırdan farklı çıkış kodu."""
     res = []
     cases = {'eski_doc.docx': b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1' + b'\x00' * 600,
              'duz_metin.docx': 'bu bir docx değil'.encode(),
              'olmayan.docx': None}
+    # Metni gömülü HTML parçasında (w:altChunk) duran DOCX: okunamaz; boş UDF "doğrulandı" diye yazılmamalı
+    ac = os.path.join(workdir, 'altchunk.docx')
+    make_docx(ac, P('Başlık') + '<w:altChunk r:id="rId50"/>')
+    with open(ac, 'rb') as f:
+        cases['altchunk.docx'] = f.read()
     for name, data in cases.items():
         p = os.path.join(workdir, name)
         if data is not None:
@@ -1404,6 +1644,8 @@ def bad_inputs(workdir):
             errs.append('çıkış kodu 0')
         if 'Traceback' in r.stderr:
             errs.append('Python traceback sızdı')
+        if name == 'altchunk.docx' and 'Farklı Kaydet' not in r.stderr:
+            errs.append(f'gömülü parça için açıklayıcı hata yok: {r.stderr.strip()[:120]}')
         res.append((f'gecersiz_girdi:{name}', 'Geçersiz/bozuk girdi → temiz hata', errs))
     return res
 

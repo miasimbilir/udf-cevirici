@@ -57,6 +57,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import unicodedata
 import zipfile
 from xml.etree import ElementTree as ET
 
@@ -66,6 +67,7 @@ A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
 WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing'
 MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006'
 V = 'urn:schemas-microsoft-com:vml'
+MATH = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 NS = {'w': W}
 
 
@@ -75,6 +77,10 @@ def w(tag):
 
 class DonusumHatasi(Exception):
     """Kullanıcıya gösterilecek, anlaşılır dönüştürme hatası."""
+
+
+class GomuluParcaHatasi(DonusumHatasi):
+    """Metin gömülü parçada (w:altChunk); uygulama belgeyi önce Word'e açtırıp kaydettirebilir."""
 
 
 ALIGN = {'left': 0, 'start': 0, 'center': 1, 'right': 2, 'end': 2,
@@ -126,9 +132,18 @@ _NONBMP_MAP = {'\U0001F4DE': '\u260e', '\U0001F4E7': '\u2709', '\U0001F4E9': '\u
 NONBMP_SEEN = set()
 
 
+def _nonbmp_karsilik(ch):
+    """BMP dışı karakterin Editör'ün açabileceği karşılığı: tabloda varsa o; matematik harf ve rakamları
+    (𝐀, 𝟏 — Word'de "kalın/italik yazı" diye yapıştırılan) NFKC ile düz harfe; yoksa □ (17.11.2026)."""
+    if ch in _NONBMP_MAP:
+        return _NONBMP_MAP[ch]
+    n = unicodedata.normalize('NFKC', ch)
+    return n if n and n != ch and all(ord(c) <= 0xFFFF for c in n) else '\u25a1'
+
+
 def _nonbmp_sub(m):
     NONBMP_SEEN.add(m.group(0))
-    return _NONBMP_MAP.get(m.group(0), '\u25a1')
+    return _nonbmp_karsilik(m.group(0))
 
 
 def clean(s):
@@ -357,9 +372,14 @@ def numbering_map(z):
         root = ET.fromstring(z.read('word/numbering.xml'))
     except KeyError:
         return {}
-    abst = {}
+    abst, by_style, links = {}, {}, {}
     for a in root.findall(w('abstractNum')):
         aid = a.get(w('abstractNumId'))
+        sl, nl = a.find(w('styleLink')), a.find(w('numStyleLink'))
+        if sl is not None:
+            by_style[sl.get(w('val'))] = aid
+        if nl is not None and a.find(w('lvl')) is None:
+            links[aid] = nl.get(w('val'))
         lv = {}
         for l in a.findall(w('lvl')):
             i = l.get(w('ilvl'))
@@ -373,6 +393,11 @@ def numbering_map(z):
                      int(s.get(w('val'))) if s is not None else 1,
                      ind)
         abst[aid] = lv
+    # Liste stiline bağlı tanım (w:numStyleLink) düzey taşımaz; düzeyler stilin asıl tanımındadır
+    # (w:styleLink taşıyan abstractNum). Bağ izlenmezse liste numaraları uyarısız düşüyordu.
+    for aid, st in links.items():
+        if by_style.get(st) in abst:
+            abst[aid] = abst[by_style[st]]
     out = {}
     for nm in root.findall(w('num')):
         nid = nm.get(w('numId'))
@@ -412,6 +437,42 @@ def _num_suffix(tmpl, ilvl):
     return 'DOT'
 
 
+def _onekli(tmpl):
+    """Numara şablonunda numaradan başka harf var mı ("Madde %1.", "Article %1")?"""
+    return any(c.isalpha() for c in re.sub(r'%\d', '', tmpl or ''))
+
+
+def _numara_bicim(fmt, n):
+    """Word'ün gösterdiği biçimde numara (harfler Word gibi İngiliz alfabesiyle: …z, aa, bb)."""
+    if fmt in ('upperLetter', 'lowerLetter'):
+        h = chr(97 + (n - 1) % 26) * ((n - 1) // 26 + 1)
+        return h.upper() if fmt == 'upperLetter' else h
+    if fmt == 'upperRoman':
+        return _roman(n).upper()
+    if fmt == 'lowerRoman':
+        return _roman(n)
+    if fmt == 'decimalZero':
+        return f'{n:02d}'
+    return str(n)
+
+
+def _onekli_etiket(numid, ilvl, nmap, counters):
+    """Ön ekli şablonun ("Madde %1.", "Madde %1.%2") o kalem için Word'deki metni; düzey sayaçları ayrı tutulur."""
+    lv = nmap.get(numid, {})
+    say = counters.setdefault(('onekli', numid), {})
+    k = int(ilvl)
+    for d in [d for d in say if d > k]:                # sığ kalem gelince derin düzey yeniden başlar
+        del say[d]
+    _, tmpl, start, _ = lv[ilvl]
+    say[k] = say.get(k, (start or 1) - 1) + 1
+
+    def deger(m):
+        j = int(m.group(1)) - 1
+        f, _, st, _ = lv.get(str(j), ('decimal', '', 1, {}))
+        return _numara_bicim(f, say.get(j, st or 1))
+    return re.sub(r'%(\d)', deger, tmpl)
+
+
 def list_spec(numid, ilvl, nmap, counters, warn=None):
     """Word numaralandırmasını UDF liste özniteliklerine çevirir.
 
@@ -437,6 +498,13 @@ def list_spec(numid, ilvl, nmap, counters, warn=None):
         sec = f' SecListTypeLevel{llv}="BULLET_TYPE_{bt}"' if 2 <= llv <= 6 else ''
         return (f' Bulleted="true" BulletType="BULLET_TYPE_{bt}"{sec}'
                 f' ListId="{lid}" ListLevel="{llv}"'), None, ind
+    if _onekli(tmpl):
+        # "Madde %1." gibi ön ekli numara: UDF listesi yalnız numarayı çizer, "Madde" düşerdi. Etiket Word'ün
+        # gösterdiği gibi sabit metin yazılır; Editör'de numaralar kendiliğinden yürümez (19.11.2026, gece bulgusu 15).
+        if warn is not None:
+            warn.add('"Madde 1." gibi ön ekli numaralar sabit metin olarak yazıldı; Editör\'de bu numaralar '
+                     'kendiliğinden yürümez')
+        return '', _onekli_etiket(numid, ilvl, nmap, counters), ind
     if fmt in UDF_NUM:
         typ = f'NUMBER_TYPE_{UDF_NUM[fmt]}_{_num_suffix(tmpl, ilvl)}'
         if warn is not None and len(re.findall(r'%\d', tmpl or '')) > 1:
@@ -530,6 +598,18 @@ $st.Dispose()
 """
 
 
+def _powershell():
+    """Windows PowerShell'in TAM yolu (yoksa PATH'teki). Yalın 'powershell' adıyla çağrılınca Windows önce
+    programın durduğu klasöre (çoğu zaman İndirilenler) ve geçerli klasöre bakar; oraya konmuş sahte bir
+    powershell.exe sorgusuz çalışırdı (17.11.2026 gece denetimi)."""
+    if os.name == 'nt':
+        p = os.path.join(os.environ.get('SystemRoot') or r'C:\Windows', 'System32', 'WindowsPowerShell', 'v1.0',
+                         'powershell.exe')
+        if os.path.exists(p):
+            return p
+    return shutil.which('powershell')
+
+
 def _convert_png(data):
     """JPEG/GIF/BMP/TIFF/PDF/EMF/WMF -> PNG. Sırayla: Pillow (EMF/WMF yalnız Windows'ta), macOS sips,
     Windows PowerShell (System.Drawing; PDF için Windows.Data.Pdf)."""
@@ -556,7 +636,7 @@ def _convert_png(data):
         if shutil.which('sips'):
             cmd = ['sips', '-s', 'format', 'png'] + (['-Z', str(PDF_PX)] if kind == 'pdf' else []) + [src, '--out', dst]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
-        elif shutil.which('powershell'):
+        elif _powershell():
             if kind == 'pdf':
                 ps = _PS_PDF.replace('%SRC%', src.replace("'", "''")).replace('%DIR%', d.replace("'", "''")) \
                     .replace('%PX%', str(PDF_PX))
@@ -564,7 +644,7 @@ def _convert_png(data):
                 ps = ("Add-Type -AssemblyName System.Drawing; "
                       "$i=[System.Drawing.Image]::FromFile($env:UDF_SRC); "
                       "$i.Save($env:UDF_DST,[System.Drawing.Imaging.ImageFormat]::Png); $i.Dispose()")
-            subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', ps],
+            subprocess.run([_powershell(), '-NoProfile', '-NonInteractive', '-Command', ps],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60,
                            creationflags=_NO_WINDOW, env=dict(os.environ, UDF_SRC=src, UDF_DST=dst))
         if os.path.exists(dst):
@@ -760,6 +840,8 @@ def _image_run(node, ctx, warn):
             anchor = {'wrap': 'wrapNone', 'side': 'center', 'gap': 9.0}     # aşağıda arka plana yönlenir
     target = ctx['rels'].get(rid)
     if not target:
+        if rid and warn is not None:              # bağlantılı (dosyaya gömülmemiş) görsel ya da kopuk ilişki
+            warn.add('belgede adı geçen bir görsel dosyanın içinde bulunamadı; atlandı')
         return None
     try:
         data = ctx['zip'].read(target)
@@ -850,15 +932,21 @@ def _page_pattern_only(rest):
     return len(rest.strip()) <= 24 and all(t in _PAGE_WORDS for t in toks)
 
 
-def _iter_runs(p):
+def _iter_runs(p, keep_page=False):
     """Paragrafın kendi run'ları. Atlananlar: metin kutusu içindekiler (ayrı paragraf
-    olur), taşıma kaynağı (w:moveFrom), PAGE/NUMPAGES alan önbelleği."""
+    olur), taşıma kaynağı (w:moveFrom), silinmiş içerik (w:del), PAGE/NUMPAGES alan önbelleği.
+
+    keep_page: gövdede sayfa alanının Word'de görünen değeri sabit metin olarak KALIR. Editör sayfa
+    numarasını yalnız altbilgide çizer; gövdedeki "İşbu dilekçe 7 sayfadır" cümlesinin 7'si atılırsa
+    sayı sessizce kaybolur (17.11.2026 gece denetimi). Üstbilgi/altbilgide eskisi gibi atılır."""
     skip = set()
-    for tag in ('txbxContent', 'moveFrom'):
+    # w:del: silinen run'ın metni w:delText'tir ve zaten okunmaz; ama içindeki dipnot başvurusu, görsel,
+    # sekme ve satır sonu da silinmiştir (atlanmazsa silinmiş dipnot/görsel belgeye geri geliyordu).
+    for tag in ('txbxContent', 'moveFrom', 'del'):
         for el in p.iter(w(tag)):
             skip.update(id(r) for r in el.iter(w('r')))
     for fs in p.iter(w('fldSimple')):
-        if _is_page_field(fs.get(w('instr'))):
+        if not keep_page and _is_page_field(fs.get(w('instr'))):
             skip.update(id(r) for r in fs.iter(w('r')))
     stack = []                                    # iç içe alanlar (içindekiler > PAGEREF): düzey başına gizleme
     instr = []                                    # her düzeyin şimdiye kadarki yönergesi
@@ -879,8 +967,9 @@ def _iter_runs(p):
         if it is not None:
             if stack:
                 instr[-1] += it.text or ''
-                if _is_page_field(instr[-1]):
-                    stack[-1] = True
+                # Her parçada yeniden bakılır: "PAGE" + "REF _Toc…" diye bölünmüş PAGEREF, ilk parçada
+                # sayfa alanı sanılıp içindekiler tablosunun sayfa numarası atılmasın.
+                stack[-1] = not keep_page and _is_page_field(instr[-1])
             continue
         if any(stack):
             continue
@@ -923,7 +1012,13 @@ def parse_paragraph(p, ctx, in_cell=False, extra=None, warn=None):
     boxes = []
     float_img, block_imgs = None, []
     has_pagefld = any(_is_page_field(x) for x in _field_instrs(p))
-    for r in _iter_runs(p):
+    if has_pagefld and ctx.get('body'):
+        warn.add('gövdedeki sayfa numarası/sayısı alanı Word\'deki değeriyle sabit metin olarak yazıldı; Editör\'de '
+                 'sayfalar değişirse elle düzeltin')
+    if p.find(f'.//{{{MATH}}}oMath') is not None:
+        # Denklemin metni m:t'de durur; ne çevirici ne doğrulayıcı onu okur. Sessizce düşmesin (17.11.2026).
+        warn.add('Word denklemi taşınmadı (UDF\'de denklem yok); denklemi metin ya da görsel olarak ekleyin')
+    for r in _iter_runs(p, bool(ctx.get('body'))):
         rpr = r.find(w('rPr'))
         fmt = {k: base.get(k) for k in FMT_KEYS if base.get(k)}
         if rpr is not None:
@@ -996,11 +1091,20 @@ def parse_paragraph(p, ctx, in_cell=False, extra=None, warn=None):
                 if ctx.get('cur_note'):
                     flush()
                     lines[-1].append((ctx['cur_note'], dict(fmt, super=True)))
-            elif tag in ('drawing', 'pict'):
-                tb = node.find(f'.//{w("txbxContent")}')
-                if tb is not None:
-                    boxes.extend(tb.findall(w('p')))
+            elif tag in ('drawing', 'pict', 'object'):    # object: gömülü Excel/OLE nesnesinin önizleme görseli
+                tbs = node.findall(f'.//{w("txbxContent")}')
+                if tbs:
+                    # Gruplanmış şekilde birden çok metin kutusu olabilir: hepsi alınır (yalnız ilki alınıyor,
+                    # diğerlerinin metni düşüyordu). Kutunun içindeki kutu, kendi paragrafı işlenirken gelir.
+                    ic = {id(x) for tb in tbs for x in tb.iter(w('txbxContent')) if x is not tb}
+                    for tb in tbs:
+                        if id(tb) not in ic:
+                            boxes.extend(_box_paras(tb))
                     warn.add('metin kutusu düz paragrafa çevrildi (kutunun konumu ve çerçevesi taşınmaz)')
+                    kutuda = {id(x) for tb in tbs for x in tb.iter()}
+                    if any(id(x) not in kutuda for x in node.iter(f'{{{A}}}blip')) or \
+                            any(id(x) not in kutuda for x in node.iter(f'{{{V}}}imagedata')):
+                        warn.add('şekil/grafik/SmartArt taşınmadı')     # grupta kutunun yanındaki görsel
                     continue
                 img = _image_run(node, ctx, warn)
                 if img:
@@ -1093,14 +1197,49 @@ def iter_blocks(container):
             yield from iter_blocks(ch)
 
 
+def _rows(tbl):
+    """Tablonun satırları; içerik denetimine (w:sdt) ya da w:customXml'e sarılı satırlar da (yalnız doğrudan
+    çocuklar alınınca bu satırlar uyarısız düşüyordu; Argon #13c, 17.11.2026)."""
+    for ch in tbl:
+        if ch.tag == w('tr'):
+            yield ch
+        elif ch.tag in (w('sdt'), w('customXml')):
+            yield from _rows(ch.find(w('sdtContent')) if ch.tag == w('sdt') and ch.find(w('sdtContent')) is not None
+                             else ch)
+        elif ch.tag == w('sdtContent'):
+            yield from _rows(ch)
+
+
+def _cells(tr):
+    """Satırın hücreleri; w:sdt / w:customXml sarmalı hücreler dâhil."""
+    for ch in tr:
+        if ch.tag == w('tc'):
+            yield ch
+        elif ch.tag in (w('sdt'), w('customXml'), w('sdtContent')):
+            inner = ch.find(w('sdtContent')) if ch.tag == w('sdt') else ch
+            if inner is not None:
+                yield from _cells(inner)
+
+
+def _box_paras(tb):
+    """Metin kutusunun paragrafları; kutudaki tablo düzleşerek sıraya girer."""
+    for b in iter_blocks(tb):
+        if b.tag == w('p'):
+            yield b
+        else:
+            for tr in _rows(b):
+                for c in _cells(tr):
+                    yield from cell_paragraphs(c)
+
+
 def cell_paragraphs(tc):
     """Hücrenin paragrafları; iç içe tablo varsa düzleşerek sıraya girer."""
     for b in iter_blocks(tc):
         if b.tag == w('p'):
             yield b
         else:
-            for tr in b.findall(w('tr')):
-                for c in tr.findall(w('tc')):
+            for tr in _rows(b):
+                for c in _cells(tr):
                     yield from cell_paragraphs(c)
 
 
@@ -1284,13 +1423,23 @@ def parse_table(tbl, ctx, warn):
     raw = []
     cell_border = []                              # hücre düzeyinde kenarlık: True=çizgisiz
     cell_drawn = []                               # hücre kendi kenarlığını çiziyor mu (en az iki kenar)
-    for tr in tbl.findall(w('tr')):
+    for tr in _rows(tbl):
         min_h = 0.0
         th = tr.find(f'{w("trPr")}/{w("trHeight")}')
         if th is not None and th.get(w('val')):
             min_h = float(th.get(w('val'))) / 20
         cells = []
-        for tc in tr.findall(w('tc')):
+        gb = tr.find(f'{w("trPr")}/{w("gridBefore")}')
+        try:
+            nb = int(gb.get(w('val')) or 0) if gb is not None else 0
+        except ValueError:
+            nb = 0
+        if nb > 0:
+            # Satır soldan nb sütun içeriden başlıyor (w:gridBefore). Yeri boş hücreyle tutulmazsa satırın
+            # hücreleri sola, yanlış sütunun altına kayar; kelimeler yerinde olduğu için doğrulama da görmez.
+            cells.append({'paras': [_empty_para(True)], 'span': nb, 'vmerge': None,
+                          'valign': 'top', 'fill': None, 'mar': dict(tblmar)})
+        for tc in _cells(tr):
             tcpr = tc.find(w('tcPr'))
             span, fill, vmerge, valign = 1, None, None, 'top'
             tcb = tcpr.find(w('tcBorders')) if tcpr is not None else None
@@ -1668,8 +1817,7 @@ def read_hf(z, ctx, info, doc_rels, warn):
             paras = []
             for b in iter_blocks(root):
                 for p in ([b] if b.tag == w('p') else
-                          [q for tr in b.findall(w('tr')) for c in tr.findall(w('tc'))
-                           for q in cell_paragraphs(c)]):
+                          [q for tr in _rows(b) for c in _cells(tr) for q in cell_paragraphs(c)]):
                     paras.extend(x for x in parse_paragraph(p, ctx, warn=warn) if x['type'] == 'p')
             instrs = _field_instrs(root)
             has_page = any(_is_page_field(x) for x in instrs)
@@ -1737,8 +1885,14 @@ def read_hf(z, ctx, info, doc_rels, warn):
     return out
 
 
+ACIK_SINIR = 1 << 30                              # açılmış toplam boyut sınırı (1 GB); gerçek belgeler bunun çok altında
+
+
 def read_document(docx, warn, fill_mode='bant', yan_gorsel=False):
     z = zipfile.ZipFile(docx)
+    if sum(i.file_size for i in z.infolist()) > ACIK_SINIR:
+        # Küçük ama açılınca dev boyuta çıkan (zip bombası) ya da bozuk dosya belleği tüketmesin (Argon #17)
+        raise DonusumHatasi('belge açıldığında çok büyük (1 GB üstü); bozuk ya da zararlı olabilir.')
     names = set(z.namelist())
     if 'word/document.xml' not in names:
         raise ValueError('word/document.xml yok; bu bir Word (DOCX) belgesi değil')
@@ -1747,6 +1901,13 @@ def read_document(docx, warn, fill_mode='bant', yan_gorsel=False):
         else {'__docdefault__': {}}
     root = ET.fromstring(z.read('word/document.xml'))
     body = root.find(w('body'))
+    if body is not None and body.find(f'.//{w("altChunk")}') is not None:
+        # Metin document.xml'de değil, gömülü HTML/RTF parçasında (web uygulamalarının "Word'e aktar" çıktısı).
+        # Bu parça okunmaz; doğrulayıcı da görmez: boş ya da eksik UDF "doğrulandı" diye yazılıyordu.
+        # Word belgeyi açıp kaydedince parçayı gerçek içeriğe çevirir.
+        raise GomuluParcaHatasi('bu Word dosyasının metni gömülü bir parçada duruyor (başka bir programın '
+                                '"Word\'e aktar" çıktısı) ve doğrudan okunamıyor. Word\'de açıp "Farklı Kaydet → '
+                                'Word Belgesi (.docx)" ile kaydedip yeniden deneyin.')
     info = sect_info(body)
     l, r, t, b = info['margins']
     ctx = {'smap': smap, 'theme': theme, 'nmap': numbering_map(z), 'counters': {}, 'zip': z,
@@ -2125,7 +2286,7 @@ def cevir(docx, cikti, sayfa_no='otomatik', hucre_dolgusu='bant', yan_gorsel=Fal
         raise DonusumHatasi(f'belge okunamadı: {ex}')
     if NONBMP_SEEN:
         warn.add('Editör\'ün açamadığı karakterler (emoji vb.) değiştirildi: '
-                 + ' '.join(f'{c}→{_NONBMP_MAP.get(c, chr(0x25a1))}' for c in sorted(NONBMP_SEEN)))
+                 + ' '.join(f'{c}→{_nonbmp_karsilik(c)}' for c in sorted(NONBMP_SEEN)))
     xml, cdata = build(blocks, info, hf, sayfa_no)
     check(xml, cdata)
     with zipfile.ZipFile(cikti, 'w', zipfile.ZIP_DEFLATED) as z:

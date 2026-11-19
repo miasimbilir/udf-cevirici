@@ -10,13 +10,16 @@ denetimi düğmesine bastığında kullanılır.
 
 Akış:  belgeleri ekle → çevir → (her çıktı kaynağıyla karşılaştırılıp doğrulanır) → rapor / önizleme
 """
+import atexit
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import tkinter as tk
+import unicodedata
 import urllib.error
 import urllib.request
 import webbrowser
@@ -31,7 +34,7 @@ if not getattr(sys, "frozen", False):
 import ofis_docx
 import udf_docx
 import udf_onizle
-from docx_udf import DonusumHatasi, cevir
+from docx_udf import DonusumHatasi, GomuluParcaHatasi, cevir
 from udf_dogrula import dogrula, dogrula_docx
 
 # Sürükle-bırak Tkinter'da yerleşik değil; paket yoksa düğmeyle devam edilir.
@@ -42,7 +45,7 @@ except Exception:
     TEMEL_PENCERE, SURUKLENEBILIR = tk.Tk, False
 
 UYGULAMA_ADI = "UDF Çevirici"
-SURUM = "1.2.3"
+SURUM = "1.2.4"
 YAZAR = "Av. Arb. Mevlana İbrahim Asım Bilir"
 YAZAR_EK = "av.ibrahimbilir@gmail.com"
 TELIF = "© 2026 Av. Arb. Mevlana İbrahim Asım Bilir"
@@ -96,6 +99,40 @@ def tema_sec(pencere):
 # --------------------------------------------------------------------------
 # Çevirme işi (arayüzden bağımsız; sınama da bunu kullanır)
 # --------------------------------------------------------------------------
+# Geçici klasörler ve yarım yazılan çıktılar program kapanınca silinir; önizleme sayfaları ve sınama
+# belgeleri TEMP'te birikiyor, çeviri sürerken pencere kapanırsa ".gecici" dosyası belgenin yanında
+# kalıyordu (17.11.2026 gece denetimi, Argon #22).
+_GECICI_KLASORLER = []
+_YAZILAN = set()
+
+
+def _temizle():
+    for k in _GECICI_KLASORLER:
+        shutil.rmtree(k, ignore_errors=True)
+    for g in list(_YAZILAN):
+        try:
+            os.remove(g)
+        except OSError:
+            pass
+
+
+atexit.register(_temizle)
+
+
+def _eski_gecicileri_sil(gun=1):
+    """Önceki oturumlardan kalan (silinememiş, ör. görüntüleyicide açık kalmış) önizleme klasörleri."""
+    import time
+    kok = tempfile.gettempdir()
+    try:
+        for ad in os.listdir(kok):
+            yol = os.path.join(kok, ad)
+            if ad.startswith(("udf_onizleme_", "udf_cevirici_sinama_", "udf_cevirici_")) and os.path.isdir(yol) \
+                    and time.time() - os.path.getmtime(yol) > gun * 86400:
+                shutil.rmtree(yol, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def bos_ad(klasor, ad, uzanti=".docx"):
     """Var olan bir dosyanın üzerine yazmayacak ad: 'A.docx' doluysa "A (UDF'den).docx", o da doluysa 2, 3…"""
     aday = os.path.join(klasor, ad + uzanti)
@@ -104,6 +141,12 @@ def bos_ad(klasor, ad, uzanti=".docx"):
         aday = os.path.join(klasor, f"{ad} (UDF'den{'' if n == 1 else ' ' + str(n)}){uzanti}")
         n += 1
     return aday
+
+
+def _anahtar(yol):
+    """Aynı dosyayı gösteren iki yazımı eşitler: büyük/küçük harf ve macOS'ta aynı adın birleşik/ayrık
+    yazılmış Türkçe harfleri ("ç" tek karakter ya da "c" + çengel). Yalnız karşılaştırma içindir."""
+    return unicodedata.normalize("NFC", yol).lower()
 
 
 def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant", alinan=None):
@@ -127,11 +170,15 @@ def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant", al
     alinan = alinan if alinan is not None else set()
     cikti = bos_ad(klasor, ad) if ters else os.path.join(klasor, ad + ".udf")
     n = 2
-    while cikti.lower() in alinan:                          # bu turda başka bir belgenin çıktısı
+    # Bu turda başka bir belgenin çıktısıysa "A (2)", "A (3)"… denenir. Numaralı ad için kullanıcıya
+    # "üzerine yazılsın mı" diye SORULMAZ (soru yalnız "A.udf" içindir); bu yüzden klasörde zaten duran
+    # "A (2).udf" de atlanır, sormadan ezilmez (17.11.2026 gece denetimi).
+    while _anahtar(cikti) in alinan or (n > 2 and os.path.exists(cikti)):
         cikti = os.path.join(klasor, f"{ad} ({n}){'.docx' if ters else '.udf'}")
         n += 1
     s["cikti"] = cikti
     gecici = cikti + ".gecici"
+    _YAZILAN.add(gecici)
     ara = None                                              # .doc/.rtf/.odt/.pages -> geçici .docx
     try:
         if ters:
@@ -141,14 +188,40 @@ def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant", al
             docx, on_uyari = kaynak, []
             if ofis:
                 ara = os.path.join(tempfile.mkdtemp(prefix="udf_cevirici_"), "belge.docx")
+                _GECICI_KLASORLER.append(os.path.dirname(ara))
                 program = ofis_docx.docx_yap(kaynak, ara)
                 docx = ara
                 on_uyari = [f"belge önce {program} ile Word biçimine çevrildi; UDF ve doğrulama bu hâline göre "
                             "yapıldı"]
-            s["ozet"] = cevir(docx, gecici, sayfa_no, dolgu)
+            try:
+                s["ozet"] = cevir(docx, gecici, sayfa_no, dolgu)
+            except GomuluParcaHatasi:
+                # Metin gömülü parçada (başka programın "Word'e aktar" çıktısı): Word belgeyi açıp kaydedince
+                # parça gerçek içeriğe dönüşür. Word yoksa sade bir hata verilir (19.11.2026, gece bulgusu 08).
+                if ara:
+                    raise
+                ara = os.path.join(tempfile.mkdtemp(prefix="udf_cevirici_"), "belge.docx")
+                _GECICI_KLASORLER.append(os.path.dirname(ara))
+                try:
+                    program = ofis_docx.docx_yap(kaynak, ara, docx_izin=True)
+                except ofis_docx.OfisHatasi:
+                    raise DonusumHatasi("bu Word dosyasının metni gömülü bir parçada duruyor (başka bir programın "
+                                        "\"Word'e aktar\" çıktısı). Bu bilgisayarda Word bulunamadığı için okunamadı. "
+                                        "Word'de açıp \"Farklı Kaydet → Word Belgesi (.docx)\" ile kaydedip yeniden "
+                                        "deneyin.")
+                docx = ara
+                on_uyari = [f"belge önce {program} ile Word biçimine çevrildi; UDF ve doğrulama bu hâline göre "
+                            "yapıldı"]
+                s["ozet"] = cevir(docx, gecici, sayfa_no, dolgu)
             s["ozet"]["uyarilar"] = on_uyari + s["ozet"]["uyarilar"]
             tamam, satirlar = dogrula(docx, gecici)
-        s["uyarilar"] = s["ozet"]["uyarilar"]
+        # Doğrulayıcının uyarı düzeyindeki bulguları (dosya yine yazılır) da sonuç kutusunda gösterilir
+        dog = [l[len("UYARI: "):] for l in satirlar if l.startswith("UYARI: ")]
+        if any("devam sayfalarının" in u for u in s["ozet"]["uyarilar"]):
+            dog = [u for u in dog if "üst/altbilgideki" not in u]   # aynı fark çeviricinin uyarısında söylendi
+        if any("görsel" in u or "şekil" in u for u in s["ozet"]["uyarilar"]):
+            dog = [u for u in dog if "gövde görselinden" not in u]  # görsel kaybı çeviricinin uyarısında söylendi
+        s["uyarilar"] = s["ozet"]["uyarilar"] + dog
         s["dogrulama"] = satirlar
         if not tamam:
             s["hata"] = "çıktı doğrulamadan geçmedi; güvenli olmadığı için dosya yazılmadı."
@@ -156,7 +229,7 @@ def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant", al
         if ters and os.path.exists(cikti):                  # araya başka bir dosya girdiyse yine ezme
             cikti = s["cikti"] = bos_ad(klasor, ad)
         os.replace(gecici, cikti)
-        alinan.add(cikti.lower())
+        alinan.add(_anahtar(cikti))
         s["tamam"] = True
     except (DonusumHatasi, udf_docx.DonusumHatasi, ofis_docx.OfisHatasi) as e:
         s["hata"] = str(e)
@@ -170,8 +243,8 @@ def belge_cevir(kaynak, hedef_klasor=None, sayfa_no="otomatik", dolgu="bant", al
                 os.remove(gecici)
             except OSError:
                 pass
+        _YAZILAN.discard(gecici)
         if ara:
-            import shutil
             shutil.rmtree(os.path.dirname(ara), ignore_errors=True)
     return s
 
@@ -192,7 +265,7 @@ SADE_UYARI = (
     ("desteklenmeyen görsel", "Bir görsel (EMF/WMF/PDF gibi) çizilemediği için taşınamadı."),
     ("çevrilemedi, atlandı", "Bir görsel PNG'ye çevrilemediği için taşınamadı."),
     ("VML görsel", "Eski tip bir görsel taşınamadı."),
-    ("emoji", "Editör'ün açamadığı karakterler (emoji gibi) □ ile değiştirildi."),
+    ("emoji", "Editör'ün açamadığı karakterler değiştirildi: süslü yazılmış harfler düz harfe, emoji gibi işaretler □ işaretine."),
     ("simgenin Unicode", "Bazı özel simgeler □ olarak yazıldı."),
     ("sayfa boyutu Letter", "Sayfa boyutu Letter (Amerikan); A4 istiyorsanız Word'de sayfa boyutunu A4 yapıp yeniden çevirin."),
     ("tanıdığı boyutlardan değil", "Bu sayfa boyutu Editör'de yok; belge A4 yazıldı, satır sonları Word'dekinden farklı olabilir."),
@@ -214,6 +287,16 @@ SADE_UYARI = (
     ("e-imzalı", "Bu UDF e-imzalıydı; Word belgesi imza taşımaz, yalnızca çalışma kopyasıdır."),
     ("harf sıralı liste", "Harfli liste etiketleri (a, b, c, ç…) Editör'deki hâliyle düz metin yazıldı; "
                           "Word'de otomatik numara değildir."),
+    ("belgede adı geçen bir görsel", "Belgede adı geçen bir görsel dosyanın içinde yok (bağlantılı ya da eksik görsel), taşınamadı."),
+    ("üstbilgideydi", "Sayfa numarası Word'de üstbilgideydi. UDF'de altbilgide gösteriliyor."),
+    ("sayfa numarasının yanındaki metin", "Sayfa numarasının yanındaki metin korundu. Numarayı Editör altbilgide ayrı satırda gösterir."),
+    ("sayfa arka planı olarak yazıldı", "Antet (üstbilgideki arka plan görseli) her sayfanın arka planı olarak yazıldı."),
+    ("gövdedeki sayfa numarası", "Metindeki sayfa sayısı Word'deki değeriyle sabit yazıldı. Editör'de sayfa sayısı değişirse elle düzeltin."),
+    ("ön ekli numaralar", "\"Madde 1.\" gibi ön ekli numaralar Word'deki hâliyle yazıldı. Editör'de madde ekler ya da silerseniz numaraları elle düzeltin."),
+    ("Word denklemi", "Word denklemi taşınamadı. Denklemi metin ya da görsel olarak ekleyin."),
+    ("üst/altbilgideki", "Üstbilgi ya da altbilgideki bazı kelimeler UDF'de yok. Editör'de kontrol edin."),
+    ("gövde görselinden", "Word'deki bazı görseller UDF'de yok. Editör'de kontrol edin."),
+    ("hiçbir öğenin göstermediği", "UDF'deki bazı metinler Word'e geçmedi. Editör'deki hâliyle karşılaştırın."),
     ("antet (arka plan görseli) Word", "Antet, Word'de üstbilgiye bağlı arka plan görseli olarak yerleştirildi."),
     ("antet (arka plan görseli) okunamadı", "Antet görseli okunamadığı için taşınamadı."),
     ("form alanları", "Form alanları düz metne çevrildi."),
@@ -283,7 +366,9 @@ def klasorde_goster(yol):
         if sys.platform == "darwin":
             subprocess.run(["open", "-R", yol])
         elif os.name == "nt":
-            subprocess.run(["explorer", "/select,", os.path.normpath(yol)])
+            # Tam yol: yalın "explorer" adında Windows önce programın durduğu klasöre bakar (sahte explorer.exe)
+            gezgin = os.path.join(os.environ.get("SystemRoot") or r"C:\Windows", "explorer.exe")
+            subprocess.run([gezgin if os.path.exists(gezgin) else "explorer", "/select,", os.path.normpath(yol)])
         else:
             subprocess.run(["xdg-open", os.path.dirname(yol)])
     except Exception:
@@ -681,6 +766,7 @@ class Uygulama(TEMEL_PENCERE):
     def _onizle_isi(self, udf):
         try:
             klasor = tempfile.mkdtemp(prefix="udf_onizleme_")
+            _GECICI_KLASORLER.append(klasor)
             _, sayfalar = udf_onizle.onizle(udf, klasor, olcek=1.4)
             hata = None
         except Exception as e:
@@ -831,6 +917,7 @@ def sinama(yollar=None, rapor_yolu=None):
     try:
         assert tk.TkVersion >= 8.6, f"Tcl/Tk {tk.TkVersion} çok eski (8.6+ gerekir)"
         klasor = tempfile.mkdtemp(prefix="udf_cevirici_sinama_")
+        _GECICI_KLASORLER.append(klasor)
         ornek = os.path.join(klasor, "sınama belgesi.docx")
         _ornek_docx(ornek)
         for y in [ornek] + list(yollar or []):
@@ -939,6 +1026,7 @@ def main():
         return sinama([y for y in sys.argv[1:] if y.lower().rstrip("/").endswith(KABUL)], rapor)
     if tk.TkVersion < 8.6:
         print(f"UYARI: Tcl/Tk {tk.TkVersion} çok eski; pencere boş görünebilir.", file=sys.stderr)
+    _eski_gecicileri_sil()
     uyg = Uygulama()
     uyg.ekle([y for y in sys.argv[1:] if os.path.exists(y)])
     uyg.mainloop()

@@ -128,7 +128,9 @@ def _mac(kaynak, bundle, betik):
     kok = 'udf-cevirici-' + uuid.uuid4().hex[:8]          # kullanıcının açık belgeleriyle karışmasın
     ad = kok + os.path.splitext(kaynak)[1].lower()
     kopya = os.path.join(d, ad)
-    hedef = os.path.join(d, kok + '.docx' if bundle == WORD_MAC else 'cikti.docx')
+    # Çıktının adı kaynaktan ayrı: kaynak da .docx olunca (gömülü parçalı belge) ikisi aynı yola düşüp
+    # biri ötekinin üzerine yazılıyordu (19.11.2026)
+    hedef = os.path.join(d, kok + '-cikti.docx' if bundle == WORD_MAC else 'cikti.docx')
     try:
         if os.path.isdir(kaynak):                            # eski .pages klasör olabilir
             shutil.copytree(kaynak, kopya)
@@ -199,6 +201,9 @@ try {
     $w = New-Object -ComObject Word.Application
     $w.Visible = $false
     $w.DisplayAlerts = 0
+    # Makro calismasin: COM ile acilan belgede Word'un varsayilani makrolari ETKIN saymaktir
+    # (msoAutomationSecurityLow). 3 = msoAutomationSecurityForceDisable; ozellik yoksa yok sayilir.
+    try { $w.AutomationSecurity = 3 } catch { }
     # Parolalı belgede Word görünmez bir parola penceresinde asılı kalmasın: yanlış parola verilir, hemen hata döner
     $d = $w.Documents.Open($env:UDF_KAYNAK, $false, $true, $false, '__udf_parola_yok__')
     $d.SaveAs2($env:UDF_HEDEF, 16)
@@ -212,10 +217,18 @@ try {
 """
 
 
+def _powershell():
+    """Windows PowerShell'in TAM yolu. Yalın 'powershell' adıyla çağrılınca Windows önce programın durduğu
+    klasöre (çoğu zaman İndirilenler) ve geçerli klasöre bakar; oraya konmuş sahte bir powershell.exe çalışırdı."""
+    p = os.path.join(os.environ.get('SystemRoot') or r'C:\Windows', 'System32', 'WindowsPowerShell', 'v1.0',
+                     'powershell.exe')
+    return p if os.path.exists(p) else 'powershell'
+
+
 def _windows_word(kaynak, d):
     hedef = os.path.join(d, 'belge.docx')
     env = dict(os.environ, UDF_KAYNAK=kaynak, UDF_HEDEF=hedef)    # Türkçe adlar tırnak/kodlama sorunu çıkarmasın
-    kod, msg = _calistir(['powershell', '-NoProfile', '-NonInteractive', '-Command', _PS_WORD], env)
+    kod, msg = _calistir([_powershell(), '-NoProfile', '-NonInteractive', '-Command', _PS_WORD], env)
     if os.path.exists(hedef) and os.path.getsize(hedef) > 0:
         with open(hedef, 'rb') as f:
             return f.read(), None
@@ -238,13 +251,15 @@ def _libre(kaynak, d):
     return None, msg or f'çıkış kodu {kod}'
 
 
-def docx_yap(kaynak, hedef):
+def docx_yap(kaynak, hedef, docx_izin=False):
     """kaynak (.doc/.rtf/.odt/.pages) -> hedef .docx. Döner: kullanılan programın adı.
+    docx_izin: .docx de kabul edilir; metni gömülü parçada (w:altChunk) duran belgeyi Word açıp kaydedince
+    parça gerçek içeriğe dönüşür (19.11.2026, gece bulgusu 08).
     Başarısızsa OfisHatasi (kullanıcıya gösterilecek açıklamayla)."""
     if not os.path.exists(kaynak):
         raise OfisHatasi(f'dosya bulunamadı: {kaynak}')
     uz = os.path.splitext(kaynak)[1].lower()
-    if uz not in UZANTILAR:
+    if uz not in UZANTILAR and not (docx_izin and uz == '.docx'):
         raise OfisHatasi(f'{uz} biçimi desteklenmiyor')
     denenen = []
     adaylar = []
